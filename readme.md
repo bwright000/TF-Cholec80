@@ -8,6 +8,9 @@
 
 Library packaging the *Cholec80* dataset for easy handling with Tensorflow.
 
+###  News
+- [ **17/09/2025** ]: Check out our [CAMMA Dataset Overlaps](https://github.com/CAMMA-public/camma_dataset_overlaps) repository for an analysis of video overlaps across Cholec80, CholecT50, and Endoscapes to ensure fair dataset splits.
+
 -------------------
 
 **EndoNet: A Deep Architecture for Recognition Tasks on Laparoscopic Videos (IEEE Transactions on Medical Imaging, 2016)**
