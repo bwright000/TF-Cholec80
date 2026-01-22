@@ -1,7 +1,7 @@
 # Conda environment for MPHY0043 Coursework
 # Real-time Prediction of Remaining Duration in Cholecystectomy Surgery
 #
-# Optimized for: GTX 970 (4GB VRAM) / M2 Apple Silicon
+# Optimized for: M2 Apple Silicon
 #
 # Installation:
 #   conda env create -f environment.yaml
