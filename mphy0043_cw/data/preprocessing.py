@@ -42,11 +42,7 @@ TOOL_NAMES = [
     'Irrigator',
     'SpecimenBag'
 ]
-
-# Constants
-
 # Data Extraction from a Single Video
-
 def extract_video_data(video_id, batch_size=64):
     """
     Extracts all frame data from a single video
@@ -64,13 +60,13 @@ def extract_video_data(video_id, batch_size=64):
         mode='INFER'
     )
 
-# Collect data from each batch
+# Collect data from each batch - First initialise arrays
     frame_ids =[]
     phases = []
     instruments = []
 
     for batch in ds:
-    # Batch is a dictionary with keys: 'frame, video_id, frame_id,
+    # Batch is a dictionary with keys: frame, video_id, frame_id,
     # total_frames, instruments, phase, end_flag
         frame_ids.extend(batch['frame_id'].numpy().tolist())
         phases.extend(batch['phase'].numpy().tolist())
