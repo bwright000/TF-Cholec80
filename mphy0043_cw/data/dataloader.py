@@ -11,15 +11,15 @@ import pathlib
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from tf_cholec80.dataset import make_cholec80
-from mphy0043_cw.data.preprocessing import load_timing_labels
+from preprocessing import load_timing_labels
 import tensorflow as tf
 import numpy as np
 
 
-# DATASET SPLITS
-TRAIN_VIDEO_IDS = list(range(0, 64))   # 80% training
-VAL_VIDEO_IDS = list(range(64, 72))    # 10% validation
-TEST_VIDEO_IDS = list(range(72, 80))   # 10% testing
+# DATASET SPLITS (Standard Cholec80 protocol)
+TRAIN_VIDEO_IDS = list(range(0, 32))   # Videos 0-31 (training)
+VAL_VIDEO_IDS = list(range(32, 40))    # Videos 32-39 (validation)
+TEST_VIDEO_IDS = list(range(40, 80))   # Videos 40-79 (testing)
 
 def make_cholec80_with_timing(n_minibatch, timing_labels_path, config_path=None, video_ids=None, mode="FRAME"):
     """
@@ -103,13 +103,13 @@ def get_train_dataset(batch_size, timing_labels_path, config_path=None):
 
 
 def get_val_dataset(batch_size, timing_labels_path, config_path=None):
-    """TODO: Return validation dataset (videos 64-71) with FRAME mode"""
+    """Return validation dataset (videos 32-39) with INFER mode for consistent evaluation"""
     return make_cholec80_with_timing(
         n_minibatch=batch_size,
         timing_labels_path=timing_labels_path,
         config_path=config_path,
         video_ids=VAL_VIDEO_IDS,
-        mode='FRAME'
+        mode='INFER'
     )
 
 
