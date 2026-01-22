@@ -1,0 +1,63 @@
+# Conda environment for MPHY0043 Coursework
+# Real-time Prediction of Remaining Duration in Cholecystectomy Surgery
+#
+# Optimized for: GTX 970 (4GB VRAM) / M2 Apple Silicon
+#
+# Installation:
+#   conda env create -f environment.yaml
+#   conda activate mphy0043
+#
+# For Apple Silicon (M2), use:
+#   conda env create -f environment.yaml
+#   pip install tensorflow-macos tensorflow-metal
+
+name: mphy0043
+
+channels:
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python version
+  - python=3.10
+
+  # Core scientific computing
+  - numpy>=1.23,<2.0
+  - scipy>=1.10
+  - pandas>=1.5
+
+  # Deep learning - TensorFlow
+  # Note: For GPU support on Windows/Linux, install tensorflow[and-cuda] via pip
+  # For Apple Silicon, install tensorflow-macos and tensorflow-metal via pip
+  - pip
+
+  # Visualization
+  - matplotlib>=3.6
+  - seaborn>=0.12
+
+  # Data processing
+  - tqdm>=4.64
+  - pillow>=9.0
+  - scikit-learn>=1.2
+
+  # Configuration
+  - pyyaml>=6.0
+
+  # Jupyter (optional, for notebooks)
+  - jupyter
+  - ipykernel
+
+  # Development tools
+  - pytest>=7.0
+
+  # Pip dependencies
+  - pip:
+    # TensorFlow 2.x (CPU/GPU)
+    # On Windows/Linux with NVIDIA GPU:
+    - tensorflow>=2.13,<2.17
+    # Uncomment below for Apple Silicon instead:
+    # - tensorflow-macos>=2.13
+    # - tensorflow-metal>=1.0
+
+    # Additional utilities
+    - tensorboard>=2.13

@@ -1,0 +1,137 @@
+# MPHY0043 Coursework Configuration
+# Real-time Prediction of Remaining Duration in Cholecystectomy Surgery
+#
+# Hardware target: GTX 970 (4GB VRAM) / M2 Apple Silicon
+
+# =============================================================================
+# DATA SETTINGS
+# =============================================================================
+data:
+  # Data splits (standard Cholec80 protocol)
+  train_videos: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+                 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
+  val_videos: [32, 33, 34, 35, 36, 37, 38, 39]
+  test_videos: [40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55,
+                56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71,
+                72, 73, 74, 75, 76, 77, 78, 79]
+
+  # Frame dimensions (from Cholec80)
+  frame_height: 480
+  frame_width: 854
+  frame_channels: 3
+
+  # Number of classes
+  num_phases: 7
+  num_tools: 7
+
+  # Phase names
+  phase_names:
+    - "Preparation"
+    - "CalotTriangleDissection"
+    - "ClippingCutting"
+    - "GallbladderDissection"
+    - "GallbladderRetraction"
+    - "CleaningCoagulation"
+    - "GallbladderPackaging"
+
+  # Tool names
+  tool_names:
+    - "Grasper"
+    - "Bipolar"
+    - "Hook"
+    - "Scissors"
+    - "Clipper"
+    - "Irrigator"
+    - "SpecimenBag"
+
+# =============================================================================
+# MODEL SETTINGS
+# =============================================================================
+model:
+  # Backbone (shared across all models)
+  backbone: "resnet50"
+  backbone_weights: "imagenet"
+  backbone_trainable_layers: 1  # Fine-tune last N blocks (0 = frozen)
+  backbone_output_dim: 2048
+
+  # Task A: Time Predictor (SSM-based, Mamba-inspired)
+  time_predictor:
+    d_model: 128          # Model dimension (reduced for 4GB VRAM)
+    d_state: 32           # State dimension (key memory saver)
+    n_ssm_blocks: 2       # Number of SSM blocks
+    phase_embedding_dim: 16
+    sequence_length: 1    # Single frame for now (1 for frame-by-frame)
+    backbone_trainable_layers: 1
+
+  # Task B: Tool Detector (Baseline - visual only)
+  tool_detector:
+    hidden_dim: 512
+    backbone_trainable_layers: 1
+
+  # Task B: Timed Tool Detector (with timing info)
+  timed_tool_detector:
+    visual_hidden_dim: 512
+    timing_hidden_dim: 64
+    combined_hidden_dim: 512
+    backbone_trainable_layers: 1
+
+# =============================================================================
+# TRAINING SETTINGS
+# =============================================================================
+training:
+  # Batch size (reduce for OOM errors on 4GB VRAM)
+  batch_size: 8  # Use 4 for full resolution on GTX 970
+
+  # Learning rate
+  learning_rate: 0.0001  # 1e-4
+
+  # Regularization
+  dropout_rate: 0.3
+  gradient_clip_norm: 1.0
+
+  # Training duration
+  epochs: 50
+  early_stopping_patience: 10
+
+  # Loss weights (Task A)
+  remaining_weight: 1.0
+  future_weight: 0.5
+
+  # Focal loss for tool detection (handles class imbalance)
+  focal_gamma: 2.0
+  focal_alpha: 0.25
+
+# =============================================================================
+# EVALUATION SETTINGS
+# =============================================================================
+evaluation:
+  # Time prediction thresholds (in minutes)
+  time_thresholds_minutes: [2, 5, 10]
+
+  # Tool detection threshold
+  tool_threshold: 0.5
+
+  # Statistical testing
+  significance_level: 0.05
+
+# =============================================================================
+# PATHS
+# =============================================================================
+paths:
+  # Cholec80 config (set by prepare.py)
+  cholec80_config_path: "tf_cholec80/configs/config.json"
+
+  # Preprocessing outputs
+  timing_labels_path: "mphy0043_cw/results/timing_labels.npz"
+  phase_statistics_path: "mphy0043_cw/results/phase_statistics.json"
+
+  # Output directory
+  output_dir: "mphy0043_cw/results"
+
+  # Model checkpoints (will be created in output_dir)
+  checkpoint_dir: "mphy0043_cw/results/checkpoints"
+
+# =============================================================================
+# RANDOM SEEDS (for reproducibility)
+# =============================================================================
+random_seed: 42
