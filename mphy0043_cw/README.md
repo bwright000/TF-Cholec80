@@ -7,7 +7,7 @@ This coursework implements a deep learning solution for predicting remaining sur
 - **Task A**: Predict remaining time in current surgical phase and estimate future phase start times
 - **Task B**: Use timing predictions to improve surgical tool detection (compared against visual-only baseline)
 
-## Hardware Requirements
+## Hardware Utilised
 
 Optimized for my local hardware:
 
