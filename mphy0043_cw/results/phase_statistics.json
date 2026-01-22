@@ -1,0 +1,63 @@
+{
+  "phase_names": [
+    "Preparation",
+    "CalotTriangleDissection",
+    "ClippingCutting",
+    "GallbladderDissection",
+    "GallbladderRetraction",
+    "CleaningCoagulation",
+    "GallbladderPackaging"
+  ],
+  "num_videos": 0,
+  "durations": {
+    "Preparation": {
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0,
+      "max": 0,
+      "count": 0
+    },
+    "CalotTriangleDissection": {
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0,
+      "max": 0,
+      "count": 0
+    },
+    "ClippingCutting": {
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0,
+      "max": 0,
+      "count": 0
+    },
+    "GallbladderDissection": {
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0,
+      "max": 0,
+      "count": 0
+    },
+    "GallbladderRetraction": {
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0,
+      "max": 0,
+      "count": 0
+    },
+    "CleaningCoagulation": {
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0,
+      "max": 0,
+      "count": 0
+    },
+    "GallbladderPackaging": {
+      "mean": 0.0,
+      "std": 0.0,
+      "min": 0,
+      "max": 0,
+      "count": 0
+    }
+  }
+}
