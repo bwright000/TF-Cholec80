@@ -91,7 +91,7 @@ def parse_phase_annotations(annotation_path: str) -> Dict[int, int]:
         if not line:
             continue
 
-        parts = line.split('\t')
+        parts = line.split()
         if len(parts) >= 2:
             frame_id = int(parts[0])
             phase_name = parts[1]
@@ -196,10 +196,10 @@ def extract_video_data(data_dir: str, video_id: int) -> Dict:
             - instruments: array of tool vectors (N, 7)
 
     Note on annotation mapping:
-        - Frame files are named video01_000001.png (1-indexed)
-        - Phase annotations use 0-indexed frame numbers (0, 1, 2, ...)
-        - Tool annotations use 25fps intervals (0, 25, 50, ...)
-        - Frame file N corresponds to phase annotation N-1
+        - Frame files: video01_000001.png, video01_000002.png, ... (1-indexed, at 1fps)
+        - Phase annotations: at 25fps (indices 0, 1, 2, ..., ~43000 for a ~30min video)
+        - Tool annotations: at 1fps intervals (0, 25, 50, ... in annotation indices)
+        - Frame file N corresponds to annotation index (N-1) * 25
     """
     frames_dir = os.path.join(data_dir, 'frames')
     phase_dir = os.path.join(data_dir, 'phase_annotations')
@@ -216,26 +216,23 @@ def extract_video_data(data_dir: str, video_id: int) -> Dict:
     frame_to_tools = parse_tool_annotations(tool_file)
 
     # Build arrays aligned with frame_ids
-    # Frame files are 1-indexed (000001, 000002, ...)
-    # Phase annotations are 0-indexed (0, 1, 2, ...)
-    # So frame file N corresponds to phase annotation N-1
+    # Frame files are at 1fps (subsampled from 25fps video)
+    # Frame file N (1-indexed) corresponds to annotation index (N-1) * 25
+    # Example: frame 1 -> annotation 0, frame 2 -> annotation 25, frame 3 -> annotation 50
     phases = []
     instruments = []
 
     for frame_id in frame_ids:
-        # Map 1-indexed frame file to 0-indexed phase annotation
-        phase_annotation_idx = frame_id - 1
+        # Map 1-indexed frame file to 25fps annotation index
+        # Frame 1 -> index 0, Frame 2 -> index 25, Frame 3 -> index 50, etc.
+        annotation_idx = (frame_id - 1) * 25
 
         # Get phase (default to 0 if missing)
-        phase = frame_to_phase.get(phase_annotation_idx, 0)
+        phase = frame_to_phase.get(annotation_idx, 0)
         phases.append(phase)
 
-        # Tool annotations are at 25fps intervals (0, 25, 50, ...)
-        # Find the nearest tool annotation frame
-        tool_annotation_idx = (phase_annotation_idx // 25) * 25
-
-        # Get tools (default to zeros if missing)
-        tool = frame_to_tools.get(tool_annotation_idx, np.zeros(NUM_TOOLS, dtype=np.int32))
+        # Tool annotations are also at these 25-frame intervals
+        tool = frame_to_tools.get(annotation_idx, np.zeros(NUM_TOOLS, dtype=np.int32))
         instruments.append(tool)
 
     return {

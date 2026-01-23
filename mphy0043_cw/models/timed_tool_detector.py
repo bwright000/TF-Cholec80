@@ -9,9 +9,9 @@ The timing information comes from:
 Architecture:
     Visual Branch:   Frame → ResNet-50 → 2048-d
     Timing Branch:   [remaining_time, phase_progress, phase_onehot] → Dense(64)
-                            ↘        ↙
+                        ↘              ↙
                            Concatenate
-                               ↓
+                                ↓
                     Dense(512) → Dense(7, sigmoid)
 
 This will be compared against the baseline (tool_detector.py) to measure
@@ -28,8 +28,8 @@ from tensorflow.keras.layers import (
     Activation, Concatenate
 )
 
-from models.backbone import create_backbone, get_backbone_output_dim
-from models.tool_detector import NUM_TOOLS, TOOL_NAMES, focal_loss, FocalLoss
+from .backbone import create_backbone, get_backbone_output_dim
+from .tool_detector import NUM_TOOLS, TOOL_NAMES, focal_loss, FocalLoss
 
 
 # ============================================================================

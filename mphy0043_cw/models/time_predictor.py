@@ -27,7 +27,7 @@ from tensorflow.keras.layers import (
 import numpy as np
 
 # Import backbone (Created in backbone.py)
-from models.backbone import create_backbone, get_backbone_output_dim
+from .backbone import create_backbone, get_backbone_output_dim
 
 
 # ============================================================================
@@ -292,8 +292,8 @@ class SSMBlock(Layer):
 
 def create_time_predictor(
     sequence_length=64,
-    d_model=128,       # Reduced for memory efficiency
-    d_state=32,        # Small state for 4GB VRAM
+    d_model=128,       # Small to improve efficiency
+    d_state=32,        # Small state for hardware restrictions
     n_ssm_blocks=2,
     phase_embedding_dim=16,
     dropout_rate=0.3,
@@ -302,8 +302,6 @@ def create_time_predictor(
 ):
     """
     Create the time prediction model (Task A).
-
-    Optimized for GTX 970 (4GB) / M2 Apple Silicon.
 
     Architecture:
         Frame sequence → Backbone (per-frame) → Feature sequence

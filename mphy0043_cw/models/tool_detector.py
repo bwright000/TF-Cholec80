@@ -26,7 +26,7 @@ from tensorflow.keras.layers import (
     Input, Dense, Dropout, BatchNormalization, Activation
 )
 
-from models.backbone import create_backbone, get_backbone_output_dim
+from .backbone import create_backbone, get_backbone_output_dim
 
 
 # ============================================================================

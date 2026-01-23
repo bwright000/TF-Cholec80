@@ -8,8 +8,8 @@ This package contains:
 - timed_tool_detector.py: Task B timed - tool detection with timing info
 """
 
-from models.backbone import create_backbone, get_backbone_output_dim
-from models.time_predictor import (
+from .backbone import create_backbone, get_backbone_output_dim
+from .time_predictor import (
     create_time_predictor,
     SSMLayer,
     SSMBlock,
@@ -17,7 +17,7 @@ from models.time_predictor import (
     future_phase_loss,
     combined_time_loss
 )
-from models.tool_detector import (
+from .tool_detector import (
     create_tool_detector,
     focal_loss,
     FocalLoss,
@@ -26,7 +26,7 @@ from models.tool_detector import (
     NUM_TOOLS,
     TOOL_NAMES
 )
-from models.timed_tool_detector import (
+from .timed_tool_detector import (
     create_timed_tool_detector,
     create_attention_timed_tool_detector,
     prepare_timing_inputs_from_predictions,

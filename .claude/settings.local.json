@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(C:/Users/benli/miniconda3/envs/mphy0043/python.exe -c:*)",
+      "Bash(grep:*)"
+    ]
+  }
+}

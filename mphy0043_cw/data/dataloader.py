@@ -1,149 +1,200 @@
 """
 DataLoader for MPHY0043 Coursework.
-Combines core Cholec80 dataset with preprocessed timing labels.
+Provides training, validation, and test datasets using raw Cholec80 data.
+
+This module wraps dataset.py and preprocessing.py to provide convenient
+functions for loading datasets with timing labels.
 """
 
-import sys
 import os
-import pathlib
+import sys
+from pathlib import Path
+from typing import Optional, List, Dict
 
-# Add parent directory to path for importing tf_cholec80
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-
-from tf_cholec80.dataset import make_cholec80
-from preprocessing import load_timing_labels
 import tensorflow as tf
 import numpy as np
 
+# Import from our dataset module
+from mphy0043_cw.data.dataset import (
+    create_dataset,
+    load_video_data,
+    TRAIN_VIDEO_IDS,
+    VAL_VIDEO_IDS,
+    TEST_VIDEO_IDS,
+    NUM_PHASES,
+    NUM_TOOLS,
+    FRAME_HEIGHT,
+    FRAME_WIDTH
+)
+from mphy0043_cw.data.preprocessing import load_timing_labels
 
-# DATASET SPLITS (Standard Cholec80 protocol)
-TRAIN_VIDEO_IDS = list(range(0, 32))   # Videos 0-31 (training)
-VAL_VIDEO_IDS = list(range(32, 40))    # Videos 32-39 (validation)
-TEST_VIDEO_IDS = list(range(40, 80))   # Videos 40-79 (testing)
 
-def make_cholec80_with_timing(n_minibatch, timing_labels_path, config_path=None, video_ids=None, mode="FRAME"):
+def get_train_dataset(
+    data_dir: str,
+    batch_size: int = 8,
+    timing_labels_path: Optional[str] = None,
+    shuffle: bool = True,
+    augment: bool = True
+) -> tf.data.Dataset:
     """
-    Creates Cholec80 dataset with timing labels merged in.
+    Get training dataset (videos 01-32).
 
-    TODO:
-    1. Call make_cholec80() to get base dataset
-    2. Load timing labels from .npz file
-    3. Map a function to add timing labels to each batch
-    4. Return the enhanced dataset
+    Args:
+        data_dir: Path to Cholec80 data directory
+        batch_size: Batch size
+        timing_labels_path: Path to timing_labels.npz (optional)
+        shuffle: Whether to shuffle data
+        augment: Whether to apply augmentation
+
+    Returns:
+        tf.data.Dataset with training data
     """
-    ds = make_cholec80(
-        n_minibatch = n_minibatch,
-        config_path = config_path,
-        video_ids = video_ids,
-        mode = mode,
-    )
-    all_timing_labels = load_timing_labels(timing_labels_path)
+    timing_labels = None
+    if timing_labels_path and os.path.exists(timing_labels_path):
+        timing_labels = load_timing_labels(timing_labels_path)
 
-    def add_timing_labels(batch):
-        def lookup_timings(video_ids, frame_ids):
-            batch_size = len(video_ids)
-            remaining_phase = np.zeros(batch_size, dtype = np.int32)
-            remaining_surgery = np.zeros(batch_size, dtype = np.int32)
-            elapsed_phase = np.zeros(batch_size, dtype = np.int32)
-            phase_progress = np.zeros(batch_size, dtype = np.float32)
-            future_phase_starts = np.zeros((batch_size, 7), dtype = np.int32)
-            for i in range(batch_size):
-                frame_id = int(frame_ids[i])
-                video_id_str = video_ids[i].decode('utf-8')
-                video_num = int(video_id_str.replace('video', ''))
-                labels = all_timing_labels[video_num]
-                remaining_phase[i] = labels['remaining_phase'][frame_id]
-                remaining_surgery[i] = labels['remaining_surgery'][frame_id]
-                elapsed_phase[i] = labels['elapsed_phase'][frame_id]
-                phase_progress[i] = labels['phase_progress'][frame_id]
-                future_phase_starts[i] = labels['future_phase_starts'][frame_id]
-            return (remaining_phase, 
-                    remaining_surgery, 
-                    elapsed_phase, 
-                    phase_progress, 
-                    future_phase_starts
-                    )
-        (remaining_phase,
-        remaining_surgery,
-        elapsed_phase,
-        phase_progress,
-        future_phase_starts
-        ) = tf.py_function(
-            func = lookup_timings,
-            inp = [batch['video_id'], batch['frame_id']],
-            Tout = [tf.int32, tf.int32, tf.int32, tf.float32, tf.int32]
-            )
-        remaining_phase.set_shape([None])
-        remaining_surgery.set_shape([None])
-        elapsed_phase.set_shape([None])
-        phase_progress.set_shape([None])
-        future_phase_starts.set_shape([None, 7])
-
-        batch['remaining_phase'] = remaining_phase
-        batch['remaining_surgery'] = remaining_surgery
-        batch['elapsed_phase'] = elapsed_phase
-        batch['phase_progress'] = phase_progress
-        batch['future_phase_starts'] = future_phase_starts
-
-        return batch
-    ds = ds.map(add_timing_labels, num_parallel_calls = tf.data.AUTOTUNE)
-    return ds
-
-
-
-def get_train_dataset(batch_size, timing_labels_path, config_path=None):
-    """TODO: Return training dataset (videos 0-63) with FRAME mode"""
-    return make_cholec80_with_timing(
-        n_minibatch=batch_size,
-        timing_labels_path=timing_labels_path,
-        config_path=config_path,
+    return create_dataset(
+        data_dir=data_dir,
         video_ids=TRAIN_VIDEO_IDS,
-        mode='FRAME'
+        batch_size=batch_size,
+        shuffle=shuffle,
+        augment=augment,
+        include_timing=timing_labels is not None,
+        timing_labels=timing_labels
     )
 
 
-def get_val_dataset(batch_size, timing_labels_path, config_path=None):
-    """Return validation dataset (videos 32-39) with INFER mode for consistent evaluation"""
-    return make_cholec80_with_timing(
-        n_minibatch=batch_size,
-        timing_labels_path=timing_labels_path,
-        config_path=config_path,
+def get_val_dataset(
+    data_dir: str,
+    batch_size: int = 8,
+    timing_labels_path: Optional[str] = None
+) -> tf.data.Dataset:
+    """
+    Get validation dataset (videos 33-40).
+
+    Args:
+        data_dir: Path to Cholec80 data directory
+        batch_size: Batch size
+        timing_labels_path: Path to timing_labels.npz (optional)
+
+    Returns:
+        tf.data.Dataset with validation data
+    """
+    timing_labels = None
+    if timing_labels_path and os.path.exists(timing_labels_path):
+        timing_labels = load_timing_labels(timing_labels_path)
+
+    return create_dataset(
+        data_dir=data_dir,
         video_ids=VAL_VIDEO_IDS,
-        mode='INFER'
+        batch_size=batch_size,
+        shuffle=False,
+        augment=False,
+        include_timing=timing_labels is not None,
+        timing_labels=timing_labels
     )
 
 
-def get_test_dataset(batch_size, timing_labels_path, config_path=None):
-    """TODO: Return test dataset (videos 72-79) with INFER mode"""
-    return make_cholec80_with_timing(
-        n_minibatch=batch_size,
-        timing_labels_path=timing_labels_path,
-        config_path=config_path,
+def get_test_dataset(
+    data_dir: str,
+    batch_size: int = 8,
+    timing_labels_path: Optional[str] = None
+) -> tf.data.Dataset:
+    """
+    Get test dataset (videos 41-80).
+
+    Args:
+        data_dir: Path to Cholec80 data directory
+        batch_size: Batch size
+        timing_labels_path: Path to timing_labels.npz (optional)
+
+    Returns:
+        tf.data.Dataset with test data
+    """
+    timing_labels = None
+    if timing_labels_path and os.path.exists(timing_labels_path):
+        timing_labels = load_timing_labels(timing_labels_path)
+
+    return create_dataset(
+        data_dir=data_dir,
         video_ids=TEST_VIDEO_IDS,
-        mode='INFER'
+        batch_size=batch_size,
+        shuffle=False,
+        augment=False,
+        include_timing=timing_labels is not None,
+        timing_labels=timing_labels
     )
 
 
+def get_dataset_for_videos(
+    data_dir: str,
+    video_ids: List[int],
+    batch_size: int = 8,
+    timing_labels_path: Optional[str] = None,
+    shuffle: bool = False
+) -> tf.data.Dataset:
+    """
+    Get dataset for specific video IDs.
+
+    Args:
+        data_dir: Path to Cholec80 data directory
+        video_ids: List of video IDs (1-indexed)
+        batch_size: Batch size
+        timing_labels_path: Path to timing_labels.npz (optional)
+        shuffle: Whether to shuffle data
+
+    Returns:
+        tf.data.Dataset with specified videos
+    """
+    timing_labels = None
+    if timing_labels_path and os.path.exists(timing_labels_path):
+        timing_labels = load_timing_labels(timing_labels_path)
+
+    return create_dataset(
+        data_dir=data_dir,
+        video_ids=video_ids,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        augment=False,
+        include_timing=timing_labels is not None,
+        timing_labels=timing_labels
+    )
+
+
+# ============================================================================
+# TEST
+# ============================================================================
 
 if __name__ == '__main__':
-    """TODO: Test dataloader with a small subset of videos and print first batch"""
-    test_ds = make_cholec80_with_timing(
-        n_minibatch=4,
-        timing_labels_path='mphy0043_cw/results/timing_labels.npz',
-        config_path='tf_cholec80/configs/config.json',
-        video_ids=[0, 1],
-        mode="FRAME"
-    )
-    # Print first batch
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Test dataloader')
+    parser.add_argument('--data_dir', type=str, required=True,
+                        help='Path to Cholec80 directory')
+    parser.add_argument('--timing_labels', type=str, default=None,
+                        help='Path to timing_labels.npz')
+    args = parser.parse_args()
+
     print("Testing dataloader...")
-    for batch in test_ds.take(1):
-        print("Batch keys:", batch.keys())
-        print("Frame shape:", batch['frame'].shape)
-        print("Video IDs:", batch['video_id'].numpy())
-        print("Frame IDs:", batch['frame_id'].numpy())
-        print("Phases:", batch['phase'].numpy())
-        print("Remaining phase:", batch['remaining_phase'].numpy())
-        print("Remaining surgery:", batch['remaining_surgery'].numpy())
-        print("Phase progress:", batch['phase_progress'].numpy())
-        break
-    print("Test complete!")
+    print("=" * 60)
+
+    # Test train dataset
+    print("\n1. Loading training dataset (first 2 videos only for speed)...")
+    train_ds = get_dataset_for_videos(
+        data_dir=args.data_dir,
+        video_ids=[1, 2],
+        batch_size=4,
+        timing_labels_path=args.timing_labels
+    )
+
+    # Get one batch
+    for batch in train_ds.take(1):
+        print(f"   Batch keys: {list(batch.keys())}")
+        print(f"   Frame shape: {batch['frame'].shape}")
+        print(f"   Phase values: {batch['phase'].numpy()}")
+        print(f"   Instruments shape: {batch['instruments'].shape}")
+        if 'remaining_phase' in batch:
+            print(f"   Remaining phase: {batch['remaining_phase'].numpy()}")
+
+    print("\n" + "=" * 60)
+    print("Dataloader test complete!")

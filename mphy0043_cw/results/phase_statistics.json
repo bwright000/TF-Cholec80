@@ -8,56 +8,56 @@
     "CleaningCoagulation",
     "GallbladderPackaging"
   ],
-  "num_videos": 0,
+  "num_videos": 80,
   "durations": {
     "Preparation": {
-      "mean": 0.0,
-      "std": 0.0,
-      "min": 0,
-      "max": 0,
-      "count": 0
+      "mean": 120.7605633802817,
+      "std": 101.16691893601656,
+      "min": 20,
+      "max": 481,
+      "count": 71
     },
     "CalotTriangleDissection": {
-      "mean": 0.0,
-      "std": 0.0,
-      "min": 0,
-      "max": 0,
-      "count": 0
+      "mean": 935.325,
+      "std": 659.1181945410095,
+      "min": 288,
+      "max": 4409,
+      "count": 80
     },
     "ClippingCutting": {
-      "mean": 0.0,
-      "std": 0.0,
-      "min": 0,
-      "max": 0,
-      "count": 0
+      "mean": 176.0,
+      "std": 127.54793216669567,
+      "min": 35,
+      "max": 674,
+      "count": 80
     },
     "GallbladderDissection": {
-      "mean": 0.0,
-      "std": 0.0,
-      "min": 0,
-      "max": 0,
-      "count": 0
+      "mean": 730.4125,
+      "std": 529.6355042326279,
+      "min": 106,
+      "max": 3129,
+      "count": 80
     },
     "GallbladderRetraction": {
-      "mean": 0.0,
-      "std": 0.0,
-      "min": 0,
-      "max": 0,
-      "count": 0
+      "mean": 82.9375,
+      "std": 74.1283251783689,
+      "min": 4,
+      "max": 570,
+      "count": 80
     },
     "CleaningCoagulation": {
-      "mean": 0.0,
-      "std": 0.0,
-      "min": 0,
-      "max": 0,
-      "count": 0
+      "mean": 193.67567567567568,
+      "std": 151.9059193291893,
+      "min": 22,
+      "max": 595,
+      "count": 74
     },
     "GallbladderPackaging": {
-      "mean": 0.0,
-      "std": 0.0,
-      "min": 0,
-      "max": 0,
-      "count": 0
+      "mean": 95.225,
+      "std": 47.61354192874124,
+      "min": 38,
+      "max": 292,
+      "count": 80
     }
   }
 }
