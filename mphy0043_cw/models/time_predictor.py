@@ -122,191 +122,112 @@ BACKBONE_DIM = 2048  # ResNet-50 output dimension
 
 class SSMLayer(Layer):
     """
-    Selective State Space Model layer inspired by Mamba.
+    Parallel Selective State Space Model (SSM) Layer.
+    
+    This layer implements a Mamba-inspired State Space Model optimized for 
+    high-throughput training on GPU clusters. It reformulates the 
+    traditionally sequential SSM recurrence as a parallelizable convolution 
+    using the Fast Fourier Transform (FFT).
 
-    Optimized for memory-constrained hardware (GTX 970 4GB / M2 Apple Silicon).
-
-    Implements the core SSM equations:
-        h(t) = A * h(t-1) + B(x) * x_proj(t)
-        y(t) = C(x) * h(t) + D * x(t)
-
-    Key features:
-        - Input-dependent B and C (selective mechanism from Mamba)
-        - Proper state-space projections (fixes collapsed scalar issue)
-        - Memory-efficient sequential scan (appropriate for limited VRAM)
-        - Stable state dynamics via negative A parameterization
+    Mathematical Formulation:
+        Recurrence: h(t) = A*h(t-1) + B(x)*x(t)
+        Convolutional Form: y = x * K, where K = [B, AB, A^2B, ..., A^{L-1}B]
+    
+    Key Optimizations for GPU Clusters:
+        1. FFT Convolution: Replaces O(L) sequential loops with O(L log L) 
+           parallel operations, maximizing CUDA core utilization.
+        2. Stable A-Parameterization: Learns A in log-space to ensure 
+           system stability (negative real eigenvalues).
+        3. Selective Mechanism: Uses input-dependent projections for B and C, 
+           allowing the model to "forget" irrelevant frames or "focus" on 
+           critical surgical transitions.
 
     Args:
-        d_model: Model dimension (input/output size)
-        d_state: State dimension (hidden state size, keep small for memory)
-        dropout_rate: Dropout rate for regularization
+        d_model (int): The number of expected features in the input (channel dimension).
+        d_state (int): The dimension of the hidden state (latent space). 
+            Higher values (e.g., 128-256) are recommended for high-end GPUs.
+        dropout_rate (float): Dropout probability applied to the output projection.
+        **kwargs: Standard Keras layer keyword arguments.
 
-    Hardware notes:
-        - Sequential loop is kept intentionally (parallel scan has overhead
-          that only benefits larger GPUs)
-        - d_state=32-64 recommended for 4GB VRAM
-        - For production, an associative scan could accelerate this
+    Input shape:
+        3D tensor with shape: `(batch, sequence_length, d_model)`.
+
+    Output shape:
+        3D tensor with shape: `(batch, sequence_length, d_model)`.
     """
-
-    def __init__(self, d_model, d_state=32, dropout_rate=0.1, **kwargs):
+    def __init__(self, d_model, d_state=64, dropout_rate=0.1, **kwargs):
         super().__init__(**kwargs)
         self.d_model = d_model
         self.d_state = d_state
         self.dropout_rate = dropout_rate
 
     def build(self, input_shape):
-        # === Input processing ===
-        # Project input to model dimension
+        self.seq_len = input_shape[1]
+        # Use the layers already imported from keras.layers
         self.input_proj = Dense(self.d_model, name='input_proj')
-
-        # Project input to state dimension for state updates
-        # This fixes the "collapsed scalar" issue - we now properly
-        # project the full d_model features into state space
-        self.x_to_state = Dense(self.d_state, use_bias=False, name='x_to_state')
-
-        # === Selective SSM parameters (input-dependent B and C) ===
-        # B_proj: generates input-dependent B matrix (gating for input)
+        self.x_to_state = Dense(self.d_state, use_bias=False)
         self.B_proj = Dense(self.d_state, name='B_proj')
-
-        # C_proj: generates input-dependent C matrix (gating for output)
         self.C_proj = Dense(self.d_state, name='C_proj')
-
-        # === Fixed SSM parameters ===
-        # A is learned as log values for stability
-        # Initialized negative to ensure state decay (prevents explosion)
-        # A_log in [-4, -1] gives A in [~0.02, ~0.37] after exp(-exp())
+        
         self.A_log = self.add_weight(
             name='A_log',
             shape=(self.d_state,),
             initializer=tf.keras.initializers.RandomUniform(-4, -1),
             trainable=True
         )
-
-        # D is the skip connection weight (direct input to output)
-        self.D = self.add_weight(
-            name='D',
-            shape=(self.d_model,),
-            initializer='ones',
-            trainable=True
-        )
-
-        # === Output processing ===
-        # Project state back to model dimension
-        # This fixes the "over-collapsed output" issue
-        self.state_to_output = Dense(self.d_model, use_bias=False, name='state_to_output')
-
-        # Final output projection
-        self.output_proj = Dense(self.d_model, name='output_proj')
-
-        # === Normalization and regularization ===
-        self.layer_norm = LayerNormalization(name='layer_norm')
+        
+        self.D = self.add_weight(name='D', shape=(self.d_model,), initializer='ones')
+        self.state_to_output = Dense(self.d_model, use_bias=False)
+        self.output_proj = Dense(self.d_model)
+        self.layer_norm = LayerNormalization()
         self.dropout = Dropout(self.dropout_rate)
 
-        super().build(input_shape)
-
     def call(self, x, training=None):
-        """
-        Forward pass through SSM layer.
-
-        Args:
-            x: Input tensor of shape (batch, seq_len, d_model)
-            training: Whether in training mode
-
-        Returns:
-            Output tensor of shape (batch, seq_len, d_model)
-        """
-        # Get static sequence length for Keras 3 compatibility
-        # (dynamic tf.shape doesn't work with Python range)
-        input_shape = tf.shape(x)
-        batch_size = input_shape[0]
-
-        # Get sequence length from static shape (required for Keras 3)
-        seq_len = x.shape[1]
-        if seq_len is None:
-            # Fallback: use tf.unstack for dynamic sequences
-            raise ValueError("SSMLayer requires static sequence length. "
-                           "Ensure input has known sequence dimension.")
-
-        # Store residual for skip connection
         residual = x
-
-        # Pre-norm (like modern transformers/Mamba)
         x = self.layer_norm(x)
+        
+        # 1. Projections
+        z = self.input_proj(x)
+        x_state = self.x_to_state(z) 
+        
+        # 2. Compute Discrete A (Transition)
+        A = -tf.exp(self.A_log) 
+        
+        # 3. Parallel FFT Convolution
+        # Calculate powers of A: (seq_len, d_state)
+        timesteps = tf.range(self.seq_len, dtype=tf.float32)
+        A_powers = tf.exp(A[None, :] * timesteps[:, None]) 
+        
+        # FFT Length: Next power of 2 for efficiency and to avoid circular convolution
+        n_fft = 2**int(np.ceil(np.log2(2 * self.seq_len - 1)))
 
-        # Project input to model dimension
-        x = self.input_proj(x)  # (batch, seq, d_model)
+        def ssm_convolution(u, kernel):
+            # u: (batch, seq, d_state), kernel: (seq, d_state)
+            u_fft = tf.signal.rfft(u, fft_length=[n_fft], axis=1)
+            k_fft = tf.signal.rfft(kernel, fft_length=[n_fft], axis=0)
+            
+            # Multiply in frequency domain (batch, freq, d_state)
+            y_fft = u_fft * tf.cast(k_fft[None, :, :], tf.complex64)
+            
+            # Inverse FFT and crop back to sequence length
+            y = tf.signal.irfft(y_fft, fft_length=[n_fft], axis=1)
+            return y[:, :self.seq_len, :]
 
-        # Compute input-dependent B and C (selective mechanism)
-        # This is the key Mamba innovation - the gates depend on input
-        B = self.B_proj(x)  # (batch, seq, d_state)
-        C = self.C_proj(x)  # (batch, seq, d_state)
-
-        # Project input to state dimension for state updates
-        x_state = self.x_to_state(x)  # (batch, seq, d_state)
-
-        # Compute discrete A (state transition matrix)
-        # A = -exp(A_log) ensures A is negative (stable decay)
-        # A_bar = exp(A) gives discrete-time transition in (0, 1)
-        A = -tf.exp(self.A_log)  # (d_state,) all negative
-        A_bar = tf.exp(A)  # (d_state,) in (0, 1) for stable dynamics
-
-        # === Sequential SSM scan ===
-        # Note: Sequential loop is intentional for memory efficiency on
-        # GTX 970/M2. Parallel associative scan has overhead that only
-        # pays off on larger GPUs (RTX 3090+, A100, etc.)
-
-        # Initialize hidden state
-        h = tf.zeros((batch_size, self.d_state), dtype=x.dtype)
-        outputs = []
-
-        # Process sequence step by step
-        for t in range(seq_len):
-            # Get timestep inputs
-            x_t = x[:, t, :]           # (batch, d_model)
-            x_state_t = x_state[:, t, :]  # (batch, d_state)
-            B_t = B[:, t, :]           # (batch, d_state)
-            C_t = C[:, t, :]           # (batch, d_state)
-
-            # State update: h(t) = A_bar * h(t-1) + B(x) * x_proj(t)
-            # B_t acts as input gate, modulating how much of x enters state
-            h = A_bar * h + B_t * x_state_t
-
-            # Output from state: C(x) * h(t)
-            # C_t acts as output gate, selecting what to read from state
-            y_state = C_t * h  # (batch, d_state) - element-wise gating
-
-            # Project state back to model dimension
-            y_from_state = self.state_to_output(y_state)  # (batch, d_model)
-
-            # Add skip connection: y(t) = state_output + D * x(t)
-            y_t = y_from_state + self.D * x_t
-
-            outputs.append(y_t)
-
-        # Stack outputs: (batch, seq, d_model)
-        y = tf.stack(outputs, axis=1)
-
-        # Final output projection
+        # Selective Mechanism
+        B = self.B_proj(z)
+        C = self.C_proj(z)
+        
+        # The core "Parallel Scan" step
+        y_state = ssm_convolution(x_state * B, A_powers)
+        y_state = y_state * C 
+        
+        # 4. Final Projection
+        y_from_state = self.state_to_output(y_state)
+        y = y_from_state + self.D * z
         y = self.output_proj(y)
-
-        # Dropout and residual connection
         y = self.dropout(y, training=training)
-        y = y + residual
-
-        return y
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({
-            'd_model': self.d_model,
-            'd_state': self.d_state,
-            'dropout_rate': self.dropout_rate
-        })
-        return config
-
-    def compute_output_shape(self, input_shape):
-        """Return output shape (same as input for this layer)."""
-        return input_shape
+        
+        return y + residual
 
 
 # ============================================================================
@@ -847,7 +768,6 @@ if __name__ == '__main__':
     param_memory_mb = (total * 4) / (1024 * 1024)  # float32 = 4 bytes
     print(f"\n   Memory Estimates (float32):")
     print(f"   - Parameters: ~{param_memory_mb:.1f} MB")
-    print(f"   - Recommended batch size for 4GB VRAM: 4-8")
     print(f"   - For full 480x854 images, use batch_size=4")
 
     # Test loss functions
@@ -863,11 +783,3 @@ if __name__ == '__main__':
                                   [55, 145, 310, 0, 0, 0]], dtype=tf.float32)
     loss_future = future_phase_loss(y_true_future, y_pred_future)
     print(f"   Future phase loss: {loss_future.numpy():.4f}")
-
-    print("\n" + "=" * 60)
-    print("All tests passed!")
-    print("\nSSM Layer fixes applied:")
-    print("  ✓ Input properly projected to state dimension (not collapsed)")
-    print("  ✓ Output properly projected back (not tiled scalar)")
-    print("  ✓ Memory-efficient for GTX 970 / M2")
-    print("  ✓ Sequential scan retained (parallel has overhead on small GPUs)")

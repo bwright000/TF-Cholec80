@@ -1,12 +1,5 @@
 """
-Training script for Time Predictor (Task A).
-
-Trains the SSM-based time prediction model to predict:
-1. Remaining time in current surgical phase
-2. Start times of future phases
-
-Usage:
-    python -m mphy0043_cw.training.train_time --config mphy0043_cw/config.yaml --data_dir /path/to/cholec80
+Training script for Time Predictor (Task A) using TensorFlow with multi-GPU support.
 """
 
 import os
@@ -14,350 +7,175 @@ import sys
 import argparse
 import yaml
 import json
-from datetime import datetime
-
 import tensorflow as tf
 import numpy as np
+from mphy0043_cw.data.dataloader import get_train_sequence_dataset, get_val_sequence_dataset
+from mphy0043_cw.models.time_predictor import create_time_predictor, weighted_huber_loss, future_phase_loss
 
-# Configure GPU memory growth to prevent OOM errors
-gpus = tf.config.list_physical_devices('GPU')
-if gpus:
-    try:
-        for gpu in gpus:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        print(f"GPU memory growth enabled for {len(gpus)} GPU(s)")
-    except RuntimeError as e:
-        print(f"GPU memory growth setting failed: {e}")
+# policy = tf.keras.mixed_precision.Policy('mixed_bfloat16')
+# tf.keras.mixed_precision.set_global_policy(policy)
 
-# Add parent directories to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
-
-from mphy0043_cw.data.dataloader import (
-    get_train_dataset, get_val_dataset,
-    get_train_sequence_dataset, get_val_sequence_dataset
-)
-from mphy0043_cw.models.time_predictor import (
-    create_time_predictor,
-    create_time_predictor_single_frame,
-    weighted_huber_loss,
-    future_phase_loss
-)
-
+# Use MirroredStrategy for multi-GPU training
+strategy = tf.distribute.MirroredStrategy()
+print(f"Number of devices: {strategy.num_replicas_in_sync}")
 
 # ============================================================================
 # DATA PREPARATION
 # ============================================================================
 
 def prepare_batch_for_time_model(batch):
-    """
-    Prepare a batch from the sequence dataloader for the SSM time prediction model.
-
-    Args:
-        batch: Batch from sequence dataloader with keys:
-            - frames: (batch, seq_len, H, W, 3) uint8
-            - phase: (batch, seq_len) int32
-            - elapsed_phase: (batch, seq_len, 1) float32
-            - remaining_phase: (batch, seq_len, 1) float32
-            - future_phase_starts: (batch, seq_len, 6) float32
-
-    Returns:
-        (inputs, outputs) tuple for model training
-    """
-    # Prepare inputs as dictionary (matching SSM model input names)
     inputs = {
-        'frames': batch['frames'],  # (batch, seq_len, H, W, C) uint8
-        'phase': batch['phase'],    # (batch, seq_len) int32
-        'elapsed_phase': batch['elapsed_phase']  # (batch, seq_len, 1) float32
+        'frames': batch['frames'], 
+        'phase': batch['phase'], 
+        'elapsed_phase': batch['elapsed_phase']
     }
-
-    # Prepare outputs
     outputs = {
-        'remaining_phase': batch['remaining_phase'],  # (batch, seq_len, 1)
-        'future_phase_starts': batch['future_phase_starts']  # (batch, seq_len, 6)
+        'remaining_phase': batch['remaining_phase'],
+        'future_phase_starts': batch['future_phase_starts']
     }
-
     return inputs, outputs
 
-
 # ============================================================================
-# CUSTOM MODEL WITH TRAINING STEP
+# CUSTOM TRAINER
 # ============================================================================
 
 class TimePredictorTrainer(tf.keras.Model):
-    """
-    Custom model wrapper for time prediction with custom training step.
-    """
-
-    def __init__(self, base_model, remaining_weight=1.0, future_weight=0.5, **kwargs):
+    def __init__(self, base_model, remaining_weight=0.8, future_weight=0.6, **kwargs):
         super().__init__(**kwargs)
         self.base_model = base_model
         self.remaining_weight = remaining_weight
         self.future_weight = future_weight
-
-        # Loss trackers
         self.loss_tracker = tf.keras.metrics.Mean(name='loss')
-        self.remaining_loss_tracker = tf.keras.metrics.Mean(name='remaining_loss')
-        self.future_loss_tracker = tf.keras.metrics.Mean(name='future_loss')
         self.mae_metric = tf.keras.metrics.MeanAbsoluteError(name='mae')
 
     def call(self, inputs, training=None):
         return self.base_model(inputs, training=training)
 
+    @tf.function
     def train_step(self, data):
         inputs, outputs = data
-
         with tf.GradientTape() as tape:
             predictions = self(inputs, training=True)
+            
+            # Loss computation
+            loss_rem = weighted_huber_loss(outputs['remaining_phase'], predictions['remaining_phase'])
+            loss_fut = future_phase_loss(outputs['future_phase_starts'], predictions['future_phase_starts'])
+            
+            total_loss = (self.remaining_weight * loss_rem + self.future_weight * loss_fut)
+            # Scale loss for mixed precision
+            scaled_loss = self.optimizer.get_scaled_loss(total_loss)
 
-            # Compute losses
-            loss_remaining = weighted_huber_loss(
-                outputs['remaining_phase'],
-                predictions['remaining_phase']
-            )
-            loss_future = future_phase_loss(
-                outputs['future_phase_starts'],
-                predictions['future_phase_starts']
-            )
-
-            total_loss = (
-                self.remaining_weight * loss_remaining +
-                self.future_weight * loss_future
-            )
-
-        # Compute and clip gradients
-        gradients = tape.gradient(total_loss, self.trainable_variables)
+        gradients = tape.gradient(scaled_loss, self.trainable_variables)
+        gradients = self.optimizer.get_unscaled_gradients(gradients)
         gradients, _ = tf.clip_by_global_norm(gradients, 1.0)
         self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
 
-        # Update metrics
         self.loss_tracker.update_state(total_loss)
-        self.remaining_loss_tracker.update_state(loss_remaining)
-        self.future_loss_tracker.update_state(loss_future)
         self.mae_metric.update_state(outputs['remaining_phase'], predictions['remaining_phase'])
+        return {"loss": self.loss_tracker.result(), "mae": self.mae_metric.result()}
 
-        return {
-            'loss': self.loss_tracker.result(),
-            'remaining_loss': self.remaining_loss_tracker.result(),
-            'future_loss': self.future_loss_tracker.result(),
-            'mae': self.mae_metric.result()
-        }
-
+    @tf.function
     def test_step(self, data):
         inputs, outputs = data
         predictions = self(inputs, training=False)
-
-        loss_remaining = weighted_huber_loss(
-            outputs['remaining_phase'],
-            predictions['remaining_phase']
-        )
-        loss_future = future_phase_loss(
-            outputs['future_phase_starts'],
-            predictions['future_phase_starts']
-        )
-        total_loss = (
-            self.remaining_weight * loss_remaining +
-            self.future_weight * loss_future
-        )
+        loss_rem = weighted_huber_loss(outputs['remaining_phase'], predictions['remaining_phase'])
+        loss_fut = future_phase_loss(outputs['future_phase_starts'], predictions['future_phase_starts'])
+        total_loss = (self.remaining_weight * loss_rem + self.future_weight * loss_fut)
 
         self.loss_tracker.update_state(total_loss)
-        self.remaining_loss_tracker.update_state(loss_remaining)
-        self.future_loss_tracker.update_state(loss_future)
         self.mae_metric.update_state(outputs['remaining_phase'], predictions['remaining_phase'])
-
-        return {
-            'loss': self.loss_tracker.result(),
-            'remaining_loss': self.remaining_loss_tracker.result(),
-            'future_loss': self.future_loss_tracker.result(),
-            'mae': self.mae_metric.result()
-        }
-
-    @property
-    def metrics(self):
-        return [
-            self.loss_tracker,
-            self.remaining_loss_tracker,
-            self.future_loss_tracker,
-            self.mae_metric
-        ]
-
+        return {"loss": self.loss_tracker.result(), "mae": self.mae_metric.result()}
 
 # ============================================================================
-# TRAINING FUNCTIONS
+# MAIN TRAINING LOOP
 # ============================================================================
-
-def create_callbacks(config, checkpoint_dir):
-    """Create training callbacks."""
-    callbacks = []
-
-    os.makedirs(checkpoint_dir, exist_ok=True)
-
-    # Model checkpoint
-    callbacks.append(tf.keras.callbacks.ModelCheckpoint(
-        filepath=os.path.join(checkpoint_dir, 'time_predictor_best.keras'),
-        save_best_only=True,
-        monitor='val_mae',
-        mode='min',
-        verbose=1
-    ))
-
-    # Early stopping
-    callbacks.append(tf.keras.callbacks.EarlyStopping(
-        monitor='val_mae',
-        patience=config['training'].get('early_stopping_patience', 10),
-        mode='min',
-        verbose=1,
-        restore_best_weights=True
-    ))
-
-    # Learning rate reduction
-    callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(
-        monitor='val_mae',
-        factor=0.5,
-        patience=5,
-        mode='min',
-        verbose=1
-    ))
-
-    return callbacks
-
 
 def train_time_predictor(config, data_dir):
-    """Main training function."""
-    print("=" * 60)
-    print("Training Time Predictor (Task A)")
-    print("=" * 60)
-
-    checkpoint_dir = config['paths']['checkpoint_dir']
-    timing_labels_path = config['paths']['timing_labels_path']
-    # Use smaller batch size for sequence training
-    batch_size = config['training'].get('sequence_batch_size', 2)
-
-    # ========== DATA ==========
-    print("\n1. Loading sequence datasets...")
-
-    # Get model config for sequence parameters
+    batch_size = config['training'].get('batch_size', 64)
     model_config = config['model']['time_predictor']
-    sequence_length = model_config.get('sequence_length', 64)
-    sequence_stride = model_config.get('sequence_stride', 32)
+    
+    with strategy.scope():
+        # Load Datasets
+        train_ds = get_train_sequence_dataset(
+            data_dir=data_dir,
+            sequence_length=model_config['sequence_length'],
+            batch_size=batch_size,
+            stride=model_config.get('sequence_stride', 16),
+            timing_labels_path=config['paths']['timing_labels_path']
+        ).map(prepare_batch_for_time_model, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
 
-    # Use sequence datasets for SSM model
-    train_ds = get_train_sequence_dataset(
-        data_dir=data_dir,
-        sequence_length=sequence_length,
-        batch_size=batch_size,
-        stride=sequence_stride,
-        timing_labels_path=timing_labels_path
-    )
+        val_ds = get_val_sequence_dataset(
+            data_dir=data_dir,
+            sequence_length=model_config['sequence_length'],
+            batch_size=batch_size,
+            stride=model_config['sequence_length'],
+            timing_labels_path=config['paths']['timing_labels_path']
+        ).map(prepare_batch_for_time_model, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
 
-    val_ds = get_val_sequence_dataset(
-        data_dir=data_dir,
-        sequence_length=sequence_length,
-        batch_size=batch_size,
-        stride=sequence_length,  # No overlap for validation
-        timing_labels_path=timing_labels_path
-    )
+        # Create Parallel SSM Model
+# Create Parallel SSM Model
+        base_model = create_time_predictor(
+            sequence_length=model_config['sequence_length'],
+            d_model=model_config['d_model'],
+            d_state=model_config['d_state'],
+            n_ssm_blocks=model_config['n_ssm_blocks'],
+            backbone_trainable_layers=config['model'].get('backbone_trainable_layers', 0)
+        )
 
-    # Prepare batches for time model
-    train_ds = train_ds.map(prepare_batch_for_time_model, num_parallel_calls=tf.data.AUTOTUNE)
-    val_ds = val_ds.map(prepare_batch_for_time_model, num_parallel_calls=tf.data.AUTOTUNE)
+        model = TimePredictorTrainer(
+            base_model,
+            remaining_weight=config['training'].get('remaining_weight', 0.8),
+            future_weight=config['training'].get('future_weight', 0.6)
+        )
 
-    print("   Sequence datasets loaded successfully")
+        optimizer = tf.keras.optimizers.Adam(learning_rate=config['training']['learning_rate'])
+        optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
+        model.compile(optimizer=optimizer)
 
-    # ========== MODEL ==========
-    print("\n2. Creating SSM-based model...")
+    # Callbacks and Fitting
+    callbacks = [
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=os.path.join(config['paths']['checkpoint_dir'], 'time_predictor_best.keras'),
+            save_best_only=True, monitor='val_mae'
+        ),
+        tf.keras.callbacks.EarlyStopping(monitor='val_mae', patience=5)
+    ]
 
-    # Use SSM-based model with sequence input
-    base_model = create_time_predictor(
-        sequence_length=sequence_length,
-        d_model=model_config.get('d_model', 128),
-        d_state=model_config.get('d_state', 32),
-        n_ssm_blocks=model_config.get('n_ssm_blocks', 2),
-        phase_embedding_dim=model_config.get('phase_embedding_dim', 16),
-        dropout_rate=config['training'].get('dropout_rate', 0.3),
-        backbone_trainable_layers=model_config.get('backbone_trainable_layers', 1)
-    )
+    model.fit(train_ds, validation_data=val_ds, epochs=20, callbacks=callbacks)
+    
+    # Save results
+    base_model.save(os.path.join(config['paths']['checkpoint_dir'], 'time_predictor_final.keras'))
 
-    # Wrap with custom training
-    model = TimePredictorTrainer(
-        base_model,
-        remaining_weight=config['training'].get('remaining_weight', 1.0),
-        future_weight=config['training'].get('future_weight', 0.5)
-    )
-
-    # Compile
-    optimizer = tf.keras.optimizers.Adam(
-        learning_rate=config['training']['learning_rate']
-    )
-    model.compile(optimizer=optimizer)
-
-    print("   Model created successfully")
-
-    # ========== TRAINING ==========
-    print("\n3. Starting training...")
-
-    callbacks = create_callbacks(config, checkpoint_dir)
-
-    history = model.fit(
-        train_ds,
-        validation_data=val_ds,
-        epochs=config['training']['epochs'],
-        callbacks=callbacks,
-        verbose=1
-    )
-
-    # ========== SAVE RESULTS ==========
-    print("\n4. Saving results...")
-
-    # Save final model
-    final_path = os.path.join(checkpoint_dir, 'time_predictor.keras')
-    model.base_model.save(final_path)
-    print(f"   Model saved to: {final_path}")
-
-    # Save training history
-    history_path = os.path.join(checkpoint_dir, 'time_predictor_history.json')
-    history_dict = {k: [float(v) for v in vals] for k, vals in history.history.items()}
-    with open(history_path, 'w') as f:
-        json.dump(history_dict, f, indent=2)
-
-    print("\n" + "=" * 60)
-    print("Training complete!")
-    if 'val_mae' in history.history:
-        print(f"Best val MAE: {min(history.history['val_mae']):.2f} frames")
-    print("=" * 60)
-
-    return model, history
-
-
-# ============================================================================
-# MAIN
-# ============================================================================
-
-def main():
+if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train Time Predictor (Task A)')
     parser.add_argument('--config', type=str, default='mphy0043_cw/config.yaml',
                         help='Path to config file')
-    parser.add_argument('--data_dir', type=str, required=True,
+    # Made optional for local testing if paths are already in config
+    parser.add_argument('--data_dir', type=str, 
                         help='Path to Cholec80 data directory')
-    parser.add_argument('--epochs', type=int, default=None,
-                        help='Override number of epochs')
-    parser.add_argument('--batch_size', type=int, default=None,
-                        help='Override batch size')
-
+    
     args = parser.parse_args()
 
-    # Load config
+    # 1. Load config
+    if not os.path.exists(args.config):
+        print(f"Error: Config file not found at {args.config}")
+        sys.exit(1)
+        
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
 
-    # Override config with command line args
-    if args.epochs is not None:
-        config['training']['epochs'] = args.epochs
-    if args.batch_size is not None:
-        config['training']['batch_size'] = args.batch_size
+    # 2. Determine Data Directory
+    # Priority: Command line argument > Config file > Environment variable
+    data_dir = args.data_dir or config['paths'].get('data_dir')
+    
+    if not data_dir or not os.path.exists(data_dir):
+        print(f"Error: Data directory '{data_dir}' not found. "
+              "Please provide it via --data_dir or update config.yaml")
+        sys.exit(1)
 
-    # Train
-    train_time_predictor(config, args.data_dir)
-
-
-if __name__ == '__main__':
-    main()
+    # 3. Launch Training
+    try:
+        train_time_predictor(config, data_dir)
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user.")
+        sys.exit(0)
