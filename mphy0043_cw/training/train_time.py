@@ -1,6 +1,11 @@
 """
 Training script for Time Predictor (Task A) using TensorFlow with multi-GPU support.
+Trains a model to predict remaining surgery time and future phase start times
+based on video sequences and timing information.
+Usage:
+    python -m mphy0043_cw.training.train_time --config mphy0043_cw/config.yaml --data_dir /path/to/cholec80
 """
+
 
 import os
 import sys
