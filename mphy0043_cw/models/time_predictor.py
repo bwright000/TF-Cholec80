@@ -2,8 +2,7 @@
 Time Predictor Model for MPHY0043 Coursework (Task A).
 
 Predicts remaining time in current surgical phase and future phase start times.
-Uses a State Space Model (SSM) inspired architecture based on Mamba principles
-for efficient temporal modeling.
+Uses a State Space Model (SSM) inspired architecture based on Mamba for efficient temporal modeling.
 
 Architecture:
     RGB Frame → ResNet-50 → 2048-d features
@@ -32,7 +31,7 @@ from .backbone import create_backbone, get_backbone_output_dim
 
 
 # ============================================================================
-# FRAME PREPROCESSING LAYER (Keras 3 Compatible)
+# FRAME PREPROCESSING LAYER
 # ============================================================================
 
 class FramePreprocessingLayer(Layer):
@@ -239,11 +238,9 @@ class SSMBlock(Layer):
     A block containing an SSM layer followed by a feedforward network.
     Similar to a Transformer block but with SSM instead of attention.
 
-    Memory-optimized for GTX 970 (4GB) / M2 Apple Silicon.
-
     Args:
         d_model: Model dimension
-        d_state: SSM state dimension (keep small: 32-64 for 4GB VRAM)
+        d_state: SSM state dimension
         d_ff: Feedforward hidden dimension (defaults to d_model * 2)
         dropout_rate: Dropout rate
     """
@@ -325,8 +322,8 @@ def create_time_predictor(
 
     Args:
         sequence_length: Number of frames in input sequence
-        d_model: Dimension of SSM model (128 recommended for 4GB VRAM)
-        d_state: SSM state dimension (32 recommended for 4GB VRAM)
+        d_model: Dimension of SSM model 
+        d_state: SSM state dimension
         n_ssm_blocks: Number of SSM blocks
         phase_embedding_dim: Dimension of phase embedding
         dropout_rate: Dropout rate
@@ -688,11 +685,8 @@ def combined_time_loss(y_true_remaining, y_pred_remaining,
 # ============================================================================
 
 if __name__ == '__main__':
-    print("Testing Time Predictor Model with SSM (Mamba-inspired)...")
+    print("Testing Time Predictor Model with SSM...")
     print("=" * 60)
-    print("Target hardware: GTX 970 (4GB) / M2 Apple Silicon")
-    print("=" * 60)
-
     # Test SSM Layer
     print("\n1. Testing SSMLayer (fixed projections)...")
     ssm_layer = SSMLayer(d_model=64, d_state=32)
@@ -783,3 +777,5 @@ if __name__ == '__main__':
                                   [55, 145, 310, 0, 0, 0]], dtype=tf.float32)
     loss_future = future_phase_loss(y_true_future, y_pred_future)
     print(f"   Future phase loss: {loss_future.numpy():.4f}")
+
+# Terminal script to run this test: python -m mphy0043_cw.models.time_predictor

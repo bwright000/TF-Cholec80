@@ -188,3 +188,5 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
+
+# Terminal script to run this script: python -m mphy0043_cw.scripts.run_all

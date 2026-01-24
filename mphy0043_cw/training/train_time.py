@@ -17,8 +17,9 @@ import numpy as np
 from mphy0043_cw.data.dataloader import get_train_sequence_dataset, get_val_sequence_dataset
 from mphy0043_cw.models.time_predictor import create_time_predictor, weighted_huber_loss, future_phase_loss
 
-# policy = tf.keras.mixed_precision.Policy('mixed_bfloat16')
-# tf.keras.mixed_precision.set_global_policy(policy)
+# mixed precision for speed and memory efficiency
+policy = tf.keras.mixed_precision.Policy('mixed_bfloat16')
+tf.keras.mixed_precision.set_global_policy(policy)
 
 # Use MirroredStrategy for multi-GPU training
 strategy = tf.distribute.MirroredStrategy()
@@ -41,7 +42,7 @@ def prepare_batch_for_time_model(batch):
     return inputs, outputs
 
 # ============================================================================
-# CUSTOM TRAINER
+# TRAINER
 # ============================================================================
 
 class TimePredictorTrainer(tf.keras.Model):
@@ -184,3 +185,5 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print("\nTraining interrupted by user.")
         sys.exit(0)
+
+# Terminal script to run this training: python -m mphy0043_cw.training.train_time --config mphy0043_cw/config.yaml

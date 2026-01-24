@@ -5,13 +5,7 @@
 # the hardware constraints of an Apple Silicon M2 Mac, however, support is provided for
 # Windows/Linux systems with NVIDIA GPUs as well.
 #
-<<<<<<< HEAD
 # Installation (Inside the mphy0043_cw folder):
-=======
-# Optimized for: M2 Apple Silicon
-#
-# Installation:
->>>>>>> 17a222281aaebbbc24aee9d9dc1c3f9b8820f987
 #   conda env create -f environment.yaml
 #   conda activate mphy0043
 #

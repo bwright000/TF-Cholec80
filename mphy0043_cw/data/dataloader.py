@@ -15,6 +15,7 @@ import tensorflow as tf
 import numpy as np
 
 # Import from our dataset module
+from mphy0043_cw.data.augmentation import augment_batch
 from mphy0043_cw.data.dataset import (
     create_dataset,
     create_sequence_dataset,
@@ -280,41 +281,83 @@ def get_test_sequence_dataset(
         timing_labels=timing_labels
     )
 
+def get_train_sequence_dataset(
+    data_dir: str,
+    sequence_length: int = 64,
+    batch_size: int = 4,
+    stride: int = 32,
+    timing_labels_path: Optional[str] = None,
+    augment: bool = True  # Added augment flag
+) -> tf.data.Dataset:
+    """
+    Get training sequence dataset (videos 01-32).
+    """
+    timing_labels = None
+    if timing_labels_path and os.path.exists(timing_labels_path):
+        timing_labels = load_timing_labels(timing_labels_path)
+
+    # 1. Create the base sequence dataset
+    dataset = create_sequence_dataset(
+        data_dir=data_dir,
+        video_ids=TRAIN_VIDEO_IDS,
+        sequence_length=sequence_length,
+        batch_size=batch_size,
+        shuffle=True,
+        stride=stride,
+        include_timing=timing_labels is not None,
+        timing_labels=timing_labels
+    )
+
+    # 2. Apply sequence-level augmentation if requested
+    if augment:
+        # We apply this AFTER batching in create_sequence_dataset 
+        # so the function receives (Batch, Seq, H, W, C)
+        dataset = dataset.map(
+            augment_batch, 
+            num_parallel_calls=tf.data.AUTOTUNE
+        )
+
+    # 3. Always prefetch for cluster performance
+    return dataset.prefetch(tf.data.AUTOTUNE)
 
 # ============================================================================
 # TEST
 # ============================================================================
-
 if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(description='Test dataloader')
-    parser.add_argument('--data_dir', type=str, required=True,
-                        help='Path to Cholec80 directory')
-    parser.add_argument('--timing_labels', type=str, default=None,
-                        help='Path to timing_labels.npz')
+    parser.add_argument('--data_dir', type=str, required=True, help='Path to Cholec80 directory')
+    parser.add_argument('--timing_labels', type=str, default=None, help='Path to timing_labels.npz')
     args = parser.parse_args()
 
-    print("Testing dataloader...")
+    print("Testing Dataloader Consistency...")
     print("=" * 60)
 
-    # Test train dataset
-    print("\n1. Loading training dataset (first 2 videos only for speed)...")
-    train_ds = get_dataset_for_videos(
-        data_dir=args.data_dir,
-        video_ids=[1, 2],
-        batch_size=4,
-        timing_labels_path=args.timing_labels
-    )
-
-    # Get one batch
+    # 1. Test Standard Dataset (Task B)
+    print("\n[CHECK] Loading Single-Frame Dataset...")
+    train_ds = get_train_dataset(args.data_dir, batch_size=2, timing_labels_path=args.timing_labels)
     for batch in train_ds.take(1):
-        print(f"   Batch keys: {list(batch.keys())}")
-        print(f"   Frame shape: {batch['frame'].shape}")
-        print(f"   Phase values: {batch['phase'].numpy()}")
-        print(f"   Instruments shape: {batch['instruments'].shape}")
-        if 'remaining_phase' in batch:
-            print(f"   Remaining phase: {batch['remaining_phase'].numpy()}")
+        print(f"  - Single Frame Keys: {list(batch.keys())}")
+        print(f"  - Image shape: {batch['frame'].shape}") # Task B uses 'frame'
 
+    # 2. Test Sequence Dataset (Task A)
+    print("\n[CHECK] Loading Sequence Dataset (SSM)...")
+    seq_ds = get_train_sequence_dataset(
+        args.data_dir, 
+        sequence_length=128, 
+        batch_size=2, 
+        timing_labels_path=args.timing_labels,
+        augment=True # Test the new augmentation!
+    )
+    
+    for batch in seq_ds.take(1):
+        print(f"  - Sequence Keys: {list(batch.keys())}")
+        print(f"  - Frames shape: {batch['frames'].shape}") # Task A uses 'frames'
+        print(f"  - Phase shape: {batch['phase'].shape}")
+        
+        # Check if augmentation worked (values should be uint8)
+        print(f"  - Data Type: {batch['frames'].dtype}")
+        
     print("\n" + "=" * 60)
-    print("Dataloader test complete!")
+    print("Dataloader test complete! Ready for Cluster.")

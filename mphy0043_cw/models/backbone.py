@@ -51,7 +51,7 @@ def create_backbone(trainable_layers=1, input_shape=(480, 854, 3)):
             should_freeze = True
             
             for block_num in range(freeze_until + 1, 6):  # Blocks to keep trainable
-                if f'conv{block_num}' in layer_name:
+                if f'_{block_num}_' in layer_name or f'conv{block_num}' in layer_name:
                     should_freeze = False
                     break
             
@@ -94,3 +94,5 @@ if __name__ == '__main__':
     print(f"Non-trainable params: {non_trainable:,}")
     
     print("\nTest complete!")
+
+# Terminal script to run this test: python -m mphy0043_cw.models.backbone

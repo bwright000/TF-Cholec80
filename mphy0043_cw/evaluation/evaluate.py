@@ -121,8 +121,13 @@ def evaluate_time_predictor(
                 elapsed = batch.get('elapsed_phase', tf.zeros_like(phases, dtype=tf.float32))
 
                 # Make prediction
-                predictions = model([frames, phases, elapsed], training=False)
-
+                inputs = {
+                            'frame': frames,
+                            'remaining_phase': remaining_time,
+                            'phase_progress': phase_progress,
+                            'phase': phases
+                }
+                predictions = model(inputs, training=False)
                 # Extract remaining_phase prediction (first output)
                 if isinstance(predictions, dict):
                     pred_remaining = predictions['remaining_phase']
@@ -605,3 +610,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+# Terminal script to run this evaluation: python -m mphy0043_cw.evaluation.evaluate

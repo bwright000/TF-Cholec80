@@ -17,6 +17,9 @@ from datetime import datetime
 
 import tensorflow as tf
 import numpy as np
+# Setup strategy for multi-GPU clusters
+strategy = tf.distribute.MirroredStrategy()
+print(f"Number of devices for Task B: {strategy.num_replicas_in_sync}")
 
 # Configure GPU memory growth to prevent OOM errors
 gpus = tf.config.list_physical_devices('GPU')
@@ -81,15 +84,18 @@ def prepare_batch_for_timed_tool_model(batch):
     Returns:
         (inputs, outputs) tuple for model training
     """
-    # Normalize frame to [0, 1]
-    frame = tf.cast(batch['frame'], tf.float32) / 255.0
+    # Cast and normalize frame
+    frame = tf.cast(batch['frame'], tf.float32)
 
-    # Timing inputs
-    remaining_phase = tf.cast(batch['remaining_phase'], tf.float32)
-    phase_progress = batch['phase_progress']
-    phase = batch['phase']
-
-    inputs = (frame, remaining_phase, phase_progress, phase)
+    inputs = {
+        'frame': frame,
+        'remaining_phase': tf.cast(batch['remaining_phase'], tf.float32),
+        'remaining_surgery': tf.cast(batch['remaining_surgery'], tf.float32),
+        'phase_progress': tf.cast(batch['phase_progress'], tf.float32),
+        'phase': tf.cast(batch['phase'], tf.int32)
+    }
+    
+    # Tools/Instruments are the targets
     outputs = tf.cast(batch['instruments'], tf.float32)
 
     return inputs, outputs
@@ -100,38 +106,27 @@ def prepare_batch_for_timed_tool_model(batch):
 # ============================================================================
 
 def create_callbacks(config, checkpoint_dir):
-    """Create training callbacks."""
-    callbacks = []
-
-    os.makedirs(checkpoint_dir, exist_ok=True)
-
-    # Model checkpoint
-    callbacks.append(tf.keras.callbacks.ModelCheckpoint(
-        filepath=os.path.join(checkpoint_dir, 'timed_tool_detector_best.keras'),
-        save_best_only=True,
-        monitor='val_mean_average_precision',
-        mode='max',
-        verbose=1
-    ))
-
-    # Early stopping
-    callbacks.append(tf.keras.callbacks.EarlyStopping(
-        monitor='val_mean_average_precision',
-        patience=config['training'].get('early_stopping_patience', 10),
-        mode='max',
-        verbose=1,
-        restore_best_weights=True
-    ))
-
-    # Learning rate reduction
-    callbacks.append(tf.keras.callbacks.ReduceLROnPlateau(
-        monitor='val_mean_average_precision',
-        factor=0.5,
-        patience=5,
-        mode='max',
-        verbose=1
-    ))
-
+    callbacks = [
+        tf.keras.callbacks.ModelCheckpoint(
+            filepath=os.path.join(checkpoint_dir, 'timed_tool_best.keras'),
+            save_best_only=True,
+            monitor='val_mean_average_precision',
+            mode='max'
+        ),
+        # Reduce LR by half if mAP doesn't improve for 3 epochs
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='val_mean_average_precision',
+            factor=0.5,
+            patience=3,
+            min_lr=1e-7,
+            verbose=1
+        ),
+        tf.keras.callbacks.EarlyStopping(
+            monitor='val_mean_average_precision',
+            patience=8,
+            restore_best_weights=True
+        )
+    ]
     return callbacks
 
 
@@ -175,33 +170,37 @@ def train_timed_tool_detector(config, data_dir):
 
     model_config = config['model'].get('timed_tool_detector', {})
 
-    model = create_timed_tool_detector(
-        visual_hidden_dim=model_config.get('visual_hidden_dim', 512),
-        timing_hidden_dim=model_config.get('timing_hidden_dim', 64),
-        combined_hidden_dim=model_config.get('combined_hidden_dim', 512),
-        dropout_rate=config['training'].get('dropout_rate', 0.3),
-        backbone_trainable_layers=model_config.get('backbone_trainable_layers', 1)
-    )
+    with strategy.scope():
+        # Load weights from Task A if you want to use the ResNet features 
+        # already learned there, or start fresh for the baseline comparison.
+        model = create_timed_tool_detector(
+            visual_hidden_dim=model_config.get('visual_hidden_dim', 512),
+            timing_hidden_dim=model_config.get('timing_hidden_dim', 64),
+            combined_hidden_dim=model_config.get('combined_hidden_dim', 512),
+            dropout_rate=config['training'].get('dropout_rate', 0.3),
+            backbone_trainable_layers=model_config.get('backbone_trainable_layers', 1)
+        )
 
-    # Compile
-    optimizer = tf.keras.optimizers.Adam(
-        learning_rate=config['training']['learning_rate']
-    )
-    loss = FocalLoss(
-        gamma=config['training'].get('focal_gamma', 2.0),
-        alpha=config['training'].get('focal_alpha', 0.25)
-    )
+        optimizer = tf.keras.optimizers.Adam(
+            learning_rate=config['training']['learning_rate']
+        )
+        
+        # Mixed precision optimizer wrapper
+        optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
 
-    model.compile(
-        optimizer=optimizer,
-        loss=loss,
-        metrics=[
-            tf.keras.metrics.BinaryAccuracy(name='accuracy'),
-            tf.keras.metrics.Precision(name='precision'),
-            tf.keras.metrics.Recall(name='recall'),
-            MeanAveragePrecision(num_classes=NUM_TOOLS, name='mean_average_precision')
-        ]
-    )
+        loss = FocalLoss(
+            gamma=config['training'].get('focal_gamma', 2.0),
+            alpha=config['training'].get('focal_alpha', 0.25)
+        )
+
+        model.compile(
+            optimizer=optimizer,
+            loss=loss,
+            metrics=[
+                tf.keras.metrics.BinaryAccuracy(name='accuracy'),
+                MeanAveragePrecision(num_classes=NUM_TOOLS, name='mean_average_precision')
+            ]
+        )
 
     print("   Model created successfully")
 
@@ -276,3 +275,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+# Terminal script to run this training: python -m mphy0043_cw.training.train_timed_tools --config mphy0043_cw/config.yaml

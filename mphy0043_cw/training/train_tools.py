@@ -18,7 +18,7 @@ from datetime import datetime
 
 import tensorflow as tf
 import numpy as np
-
+strategy = tf.distribute.MirroredStrategy()
 # Configure GPU memory growth to prevent OOM errors
 gpus = tf.config.list_physical_devices('GPU')
 if gpus:
@@ -87,9 +87,8 @@ def prepare_batch_for_tool_model(batch):
         (inputs, outputs) tuple for model training
     """
     # Normalize frame to [0, 1]
-    frame = tf.cast(batch['frame'], tf.float32) / 255.0
+    frame = tf.cast(batch['frame'], tf.float32)
     tools = tf.cast(batch['instruments'], tf.float32)
-
     return frame, tools
 
 
@@ -173,31 +172,34 @@ def train_tool_detector(config, data_dir):
 
     model_config = config['model']['tool_detector']
 
-    model = create_tool_detector(
-        hidden_dim=model_config.get('hidden_dim', 512),
-        dropout_rate=config['training'].get('dropout_rate', 0.3),
-        backbone_trainable_layers=model_config.get('backbone_trainable_layers', 1)
-    )
+    # Use the same strategy scope as the timed model
+    with strategy.scope():
+        model = create_tool_detector(
+            hidden_dim=model_config.get('hidden_dim', 512),
+            dropout_rate=config['training'].get('dropout_rate', 0.3),
+            backbone_trainable_layers=model_config.get('backbone_trainable_layers', 1)
+        )
 
-    # Compile
-    optimizer = tf.keras.optimizers.Adam(
-        learning_rate=config['training']['learning_rate']
-    )
-    loss = FocalLoss(
-        gamma=config['training'].get('focal_gamma', 2.0),
-        alpha=config['training'].get('focal_alpha', 0.25)
-    )
+        optimizer = tf.keras.optimizers.Adam(
+            learning_rate=config['training']['learning_rate']
+        )
+        
+        # Use mixed precision to match the timed model's training dynamics
+        optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
 
-    model.compile(
-        optimizer=optimizer,
-        loss=loss,
-        metrics=[
-            tf.keras.metrics.BinaryAccuracy(name='accuracy'),
-            tf.keras.metrics.Precision(name='precision'),
-            tf.keras.metrics.Recall(name='recall'),
-            MeanAveragePrecision(num_classes=NUM_TOOLS, name='mean_average_precision')
-        ]
-    )
+        loss = FocalLoss(
+            gamma=config['training'].get('focal_gamma', 2.0),
+            alpha=config['training'].get('focal_alpha', 0.25)
+        )
+
+        model.compile(
+            optimizer=optimizer,
+            loss=loss,
+            metrics=[
+                tf.keras.metrics.BinaryAccuracy(name='accuracy'),
+                MeanAveragePrecision(num_classes=NUM_TOOLS, name='mean_average_precision')
+            ]
+        )
 
     print("   Model created successfully")
 
@@ -270,3 +272,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+# Terminal script to run this training: python -m mphy0043_cw.training.train_tools --config mphy0043_cw/config.yaml
