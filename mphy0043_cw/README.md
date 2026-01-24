@@ -89,6 +89,26 @@ mphy0043_cw/
 
 ## Quick Start
 
+### Run Full Pipeline (Recommended)
+
+```bash
+python -m mphy0043_cw.scripts.run_all --data_dir /path/to/cholec80 --config mphy0043_cw/config.yaml
+```
+
+This single command runs: preprocessing → train time predictor → train tool detectors → evaluation → visualization.
+
+### Run Individual Steps
+
+```bash
+# Run specific pipeline step
+python -m mphy0043_cw.scripts.run_all --data_dir /path/to/cholec80 --step preprocess
+python -m mphy0043_cw.scripts.run_all --data_dir /path/to/cholec80 --step train_time
+python -m mphy0043_cw.scripts.run_all --data_dir /path/to/cholec80 --step train_tools
+python -m mphy0043_cw.scripts.run_all --data_dir /path/to/cholec80 --step train_timed_tools
+python -m mphy0043_cw.scripts.run_all --data_dir /path/to/cholec80 --step evaluate
+python -m mphy0043_cw.scripts.run_all --data_dir /path/to/cholec80 --step visualize
+```
+
 ### Test the Models
 
 ```bash
@@ -102,17 +122,17 @@ python -m mphy0043_cw.models.tool_detector
 python -m mphy0043_cw.models.timed_tool_detector
 ```
 
-### Training
+### Training (Alternative to run_all.py)
 
 ```bash
 # Train Task A: Time Prediction
-python -m mphy0043_cw.training.train_time --config mphy0043_cw/config.yaml
+python -m mphy0043_cw.training.train_time --config mphy0043_cw/config.yaml --data_dir /path/to/cholec80
 
 # Train Task B: Tool Detection Baseline
-python -m mphy0043_cw.training.train_tools --config mphy0043_cw/config.yaml
+python -m mphy0043_cw.training.train_tools --config mphy0043_cw/config.yaml --data_dir /path/to/cholec80
 
 # Train Task B: Tool Detection with Timing
-python -m mphy0043_cw.training.train_timed_tools --config mphy0043_cw/config.yaml
+python -m mphy0043_cw.training.train_timed_tools --config mphy0043_cw/config.yaml --data_dir /path/to/cholec80
 ```
 
 ## Model Architecture

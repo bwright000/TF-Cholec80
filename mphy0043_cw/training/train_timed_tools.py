@@ -17,11 +17,11 @@ from datetime import datetime
 
 import tensorflow as tf
 import numpy as np
-# Setup strategy for multi-GPU clusters
-strategy = tf.distribute.MirroredStrategy()
-print(f"Number of devices for Task B: {strategy.num_replicas_in_sync}")
 
-# Configure GPU memory growth to prevent OOM errors
+# ============================================================================
+# GPU CONFIGURATION (must happen before any GPU operations)
+# Reference: https://www.tensorflow.org/guide/gpu#limiting_gpu_memory_growth
+# ============================================================================
 gpus = tf.config.list_physical_devices('GPU')
 if gpus:
     try:
@@ -31,8 +31,9 @@ if gpus:
     except RuntimeError as e:
         print(f"GPU memory growth setting failed: {e}")
 
-# Add parent directories to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+# Use MirroredStrategy for multi-GPU training (after GPU config)
+strategy = tf.distribute.MirroredStrategy()
+print(f"Number of devices for Task B: {strategy.num_replicas_in_sync}")
 
 from mphy0043_cw.data.dataloader import get_train_dataset, get_val_dataset
 from mphy0043_cw.models.timed_tool_detector import create_timed_tool_detector

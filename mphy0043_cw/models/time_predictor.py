@@ -162,70 +162,83 @@ class SSMLayer(Layer):
 
     def build(self, input_shape):
         self.seq_len = input_shape[1]
-        # Use the layers already imported from keras.layers
+
+        if self.seq_len is None:
+            raise ValueError("SSMLayer requires a fixed sequence length.")
+
+        # FFT length = next power of 2 ≥ (2L − 1)
+        self.n_fft = 2 ** int(np.ceil(np.log2(2 * self.seq_len - 1)))
+
+        # Projections
         self.input_proj = Dense(self.d_model, name='input_proj')
         self.x_to_state = Dense(self.d_state, use_bias=False)
         self.B_proj = Dense(self.d_state, name='B_proj')
         self.C_proj = Dense(self.d_state, name='C_proj')
-        
+
         self.A_log = self.add_weight(
             name='A_log',
             shape=(self.d_state,),
             initializer=tf.keras.initializers.RandomUniform(-4, -1),
             trainable=True
         )
-        
-        self.D = self.add_weight(name='D', shape=(self.d_model,), initializer='ones')
+
+        self.D = self.add_weight(
+            name='D',
+            shape=(self.d_model,),
+            initializer='ones'
+        )
+
         self.state_to_output = Dense(self.d_model, use_bias=False)
         self.output_proj = Dense(self.d_model)
         self.layer_norm = LayerNormalization()
         self.dropout = Dropout(self.dropout_rate)
 
+        super().build(input_shape)
     def call(self, x, training=None):
         residual = x
         x = self.layer_norm(x)
-        
-        # 1. Projections
+
         z = self.input_proj(x)
-        x_state = self.x_to_state(z) 
-        
-        # 2. Compute Discrete A (Transition)
-        A = -tf.exp(self.A_log) 
-        
-        # 3. Parallel FFT Convolution
-        # Calculate powers of A: (seq_len, d_state)
+        x_state = self.x_to_state(z)
+
+        A = -tf.exp(self.A_log)
+
         timesteps = tf.range(self.seq_len, dtype=tf.float32)
-        A_powers = tf.exp(A[None, :] * timesteps[:, None]) 
-        
-        # FFT Length: Next power of 2 for efficiency and to avoid circular convolution
-        n_fft = 2**int(np.ceil(np.log2(2 * self.seq_len - 1)))
+        A_powers = tf.exp(A[None, :] * timesteps[:, None])
 
         def ssm_convolution(u, kernel):
-            # u: (batch, seq, d_state), kernel: (seq, d_state)
-            u_fft = tf.signal.rfft(u, fft_length=[n_fft], axis=1)
-            k_fft = tf.signal.rfft(kernel, fft_length=[n_fft], axis=0)
-            
-            # Multiply in frequency domain (batch, freq, d_state)
-            y_fft = u_fft * tf.cast(k_fft[None, :, :], tf.complex64)
-            
-            # Inverse FFT and crop back to sequence length
-            y = tf.signal.irfft(y_fft, fft_length=[n_fft], axis=1)
-            return y[:, :self.seq_len, :]
+            # u: (batch, seq_len, d_state)
+            # kernel: (seq_len, d_state)
 
-        # Selective Mechanism
+            # Move time to last axis
+            u_t = tf.transpose(u, [0, 2, 1])        # (batch, d_state, seq)
+            k_t = tf.transpose(kernel, [1, 0])      # (d_state, seq)
+
+            # FFT along time
+            u_fft = tf.signal.rfft(u_t, fft_length=[self.n_fft])
+            k_fft = tf.signal.rfft(k_t, fft_length=[self.n_fft])
+
+            # Broadcast kernel across batch
+            y_fft = u_fft * k_fft[None, :, :]
+
+            # Inverse FFT
+            y = tf.signal.irfft(y_fft, fft_length=[self.n_fft])
+
+            # Trim and restore shape
+            y = y[:, :, :self.seq_len]
+            return tf.transpose(y, [0, 2, 1])       # (batch, seq, d_state)
+
         B = self.B_proj(z)
         C = self.C_proj(z)
-        
-        # The core "Parallel Scan" step
+
         y_state = ssm_convolution(x_state * B, A_powers)
-        y_state = y_state * C 
-        
-        # 4. Final Projection
-        y_from_state = self.state_to_output(y_state)
-        y = y_from_state + self.D * z
+        y_state = y_state * C
+
+        y = self.state_to_output(y_state)
+        y = y + self.D * z
         y = self.output_proj(y)
         y = self.dropout(y, training=training)
-        
+
         return y + residual
 
 
@@ -777,5 +790,3 @@ if __name__ == '__main__':
                                   [55, 145, 310, 0, 0, 0]], dtype=tf.float32)
     loss_future = future_phase_loss(y_true_future, y_pred_future)
     print(f"   Future phase loss: {loss_future.numpy():.4f}")
-
-# Terminal script to run this test: python -m mphy0043_cw.models.time_predictor

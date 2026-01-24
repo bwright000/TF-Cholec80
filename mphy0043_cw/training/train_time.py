@@ -17,8 +17,22 @@ import numpy as np
 from mphy0043_cw.data.dataloader import get_train_sequence_dataset, get_val_sequence_dataset
 from mphy0043_cw.models.time_predictor import create_time_predictor, weighted_huber_loss, future_phase_loss
 
-# mixed precision for speed and memory efficiency
-policy = tf.keras.mixed_precision.Policy('mixed_bfloat16')
+# ============================================================================
+# GPU CONFIGURATION (must happen before any GPU operations)
+# Reference: https://www.tensorflow.org/guide/gpu#limiting_gpu_memory_growth
+# ============================================================================
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print(f"GPU memory growth enabled for {len(gpus)} GPU(s)")
+    except RuntimeError as e:
+        print(f"GPU memory growth setting failed: {e}")
+
+# Mixed precision for speed and memory efficiency
+# Reference: https://www.tensorflow.org/guide/mixed_precision
+policy = tf.keras.mixed_precision.Policy('mixed_float16')
 tf.keras.mixed_precision.set_global_policy(policy)
 
 # Use MirroredStrategy for multi-GPU training
