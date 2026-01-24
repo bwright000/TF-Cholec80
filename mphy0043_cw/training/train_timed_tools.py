@@ -18,6 +18,16 @@ from datetime import datetime
 import tensorflow as tf
 import numpy as np
 
+# Configure GPU memory growth to prevent OOM errors
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        print(f"GPU memory growth enabled for {len(gpus)} GPU(s)")
+    except RuntimeError as e:
+        print(f"GPU memory growth setting failed: {e}")
+
 # Add parent directories to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
