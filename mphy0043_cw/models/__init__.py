@@ -11,6 +11,7 @@ This package contains:
 from .backbone import create_backbone, get_backbone_output_dim
 from .time_predictor import (
     create_time_predictor,
+    create_time_predictor_single_frame,
     SSMLayer,
     SSMBlock,
     weighted_huber_loss,

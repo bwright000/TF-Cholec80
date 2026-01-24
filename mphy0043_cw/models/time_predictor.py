@@ -18,16 +18,94 @@ Architecture:
 """
 
 import tensorflow as tf
-from tensorflow.keras import Model
-from tensorflow.keras.layers import (
+import keras
+from keras import Model, ops
+from keras.layers import (
     Layer, Input, Dense, Dropout, Concatenate,
     Embedding, BatchNormalization, LayerNormalization,
-    Conv1D, Activation
+    Conv1D, Activation, Lambda
 )
 import numpy as np
 
 # Import backbone (Created in backbone.py)
 from .backbone import create_backbone, get_backbone_output_dim
+
+
+# ============================================================================
+# FRAME PREPROCESSING LAYER (Keras 3 Compatible)
+# ============================================================================
+
+class FramePreprocessingLayer(Layer):
+    """
+    Custom layer for preprocessing video frames for the backbone.
+
+    This handles:
+    1. Casting uint8 frames to float32
+    2. Flattening sequence dimension for batch processing
+    3. Applying ResNet preprocessing
+
+    Keras 3 requires TF ops to be wrapped in layers.
+    """
+
+    def __init__(self, sequence_length, input_shape_hw, **kwargs):
+        super().__init__(**kwargs)
+        self.sequence_length = sequence_length
+        self.input_shape_hw = input_shape_hw  # (H, W, C)
+
+    def call(self, frames):
+        # frames: (batch, seq_len, H, W, C) uint8
+        batch_size = tf.shape(frames)[0]
+
+        # Cast to float
+        frames_float = tf.cast(frames, tf.float32)
+
+        # Flatten to (batch * seq_len, H, W, C)
+        frames_flat = tf.reshape(
+            frames_float,
+            [-1] + list(self.input_shape_hw)
+        )
+
+        # Apply ResNet preprocessing
+        frames_preprocessed = tf.keras.applications.resnet50.preprocess_input(frames_flat)
+
+        return frames_preprocessed, batch_size
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'sequence_length': self.sequence_length,
+            'input_shape_hw': self.input_shape_hw
+        })
+        return config
+
+
+class ReshapeBackToSequence(Layer):
+    """
+    Reshape backbone features back to sequence format.
+
+    Keras 3 requires TF ops to be wrapped in layers.
+    """
+
+    def __init__(self, sequence_length, feature_dim, **kwargs):
+        super().__init__(**kwargs)
+        self.sequence_length = sequence_length
+        self.feature_dim = feature_dim
+
+    def call(self, inputs):
+        features_flat, batch_size = inputs
+        # Reshape from (batch * seq_len, feature_dim) to (batch, seq_len, feature_dim)
+        return tf.reshape(
+            features_flat,
+            [batch_size, self.sequence_length, self.feature_dim]
+        )
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'sequence_length': self.sequence_length,
+            'feature_dim': self.feature_dim
+        })
+        return config
 
 
 # ============================================================================
@@ -137,8 +215,17 @@ class SSMLayer(Layer):
         Returns:
             Output tensor of shape (batch, seq_len, d_model)
         """
-        batch_size = tf.shape(x)[0]
-        seq_len = tf.shape(x)[1]
+        # Get static sequence length for Keras 3 compatibility
+        # (dynamic tf.shape doesn't work with Python range)
+        input_shape = tf.shape(x)
+        batch_size = input_shape[0]
+
+        # Get sequence length from static shape (required for Keras 3)
+        seq_len = x.shape[1]
+        if seq_len is None:
+            # Fallback: use tf.unstack for dynamic sequences
+            raise ValueError("SSMLayer requires static sequence length. "
+                           "Ensure input has known sequence dimension.")
 
         # Store residual for skip connection
         residual = x
@@ -217,6 +304,10 @@ class SSMLayer(Layer):
         })
         return config
 
+    def compute_output_shape(self, input_shape):
+        """Return output shape (same as input for this layer)."""
+        return input_shape
+
 
 # ============================================================================
 # SSM BLOCK (Multiple SSM layers with feedforward)
@@ -284,6 +375,10 @@ class SSMBlock(Layer):
             'dropout_rate': self.dropout_rate
         })
         return config
+
+    def compute_output_shape(self, input_shape):
+        """Return output shape (same as input for this block)."""
+        return input_shape
 
 
 # ============================================================================
@@ -358,25 +453,25 @@ def create_time_predictor(
         input_shape=input_shape
     )
 
-    # Process frames through backbone
-    # Reshape to (batch * seq_len, H, W, C) for batch processing
-    batch_size = tf.shape(frames_input)[0]
-    frames_flat = tf.reshape(
-        tf.cast(frames_input, tf.float32),
-        [-1] + list(input_shape)
+    # Process frames through backbone (Keras 3 compatible)
+    # Use custom layers to wrap TF ops
+    preprocess_layer = FramePreprocessingLayer(
+        sequence_length=sequence_length,
+        input_shape_hw=input_shape,
+        name='frame_preprocessing'
     )
-
-    # Apply ResNet preprocessing
-    frames_preprocessed = tf.keras.applications.resnet50.preprocess_input(frames_flat)
+    frames_preprocessed, batch_size = preprocess_layer(frames_input)
 
     # Extract features
     features_flat = backbone(frames_preprocessed)  # (batch*seq, 2048)
 
     # Reshape back to sequence: (batch, seq_len, 2048)
-    visual_features = tf.reshape(
-        features_flat,
-        [batch_size, sequence_length, BACKBONE_DIM]
+    reshape_layer = ReshapeBackToSequence(
+        sequence_length=sequence_length,
+        feature_dim=BACKBONE_DIM,
+        name='reshape_to_sequence'
     )
+    visual_features = reshape_layer([features_flat, batch_size])
 
     # ========== PHASE EMBEDDING ==========
     phase_embedding = Embedding(
@@ -452,6 +547,125 @@ def create_time_predictor(
             'future_phase_starts': future_phase_starts
         },
         name='time_predictor'
+    )
+
+    return model
+
+
+# ============================================================================
+# SINGLE-FRAME TIME PREDICTOR (For use with current dataloader)
+# ============================================================================
+
+def create_time_predictor_single_frame(
+    hidden_dim=512,
+    phase_embedding_dim=16,
+    dropout_rate=0.3,
+    backbone_trainable_layers=1,
+    input_shape=(480, 854, 3)
+):
+    """
+    Create a simpler single-frame time prediction model.
+
+    This version works with single frames (no sequence dimension) and is
+    compatible with the current dataloader that returns individual frames.
+
+    Architecture:
+        Frame → ResNet-50 → 2048-d
+                    ↓
+        Concat with [elapsed_time, phase_embedding]
+                    ↓
+        Dense layers → Predictions
+
+    Args:
+        hidden_dim: Dimension of hidden layers
+        phase_embedding_dim: Dimension of phase embedding
+        dropout_rate: Dropout rate
+        backbone_trainable_layers: Layers to fine-tune in backbone
+        input_shape: Shape of input images (H, W, C)
+
+    Returns:
+        Keras Model with inputs:
+            - frame: (batch, H, W, C) - single frame
+            - elapsed_phase: (batch,) - elapsed frames in phase
+            - phase: (batch,) - current phase ID
+        And outputs:
+            - remaining_phase: (batch, 1)
+            - future_phase_starts: (batch, 6)
+    """
+    # ========== INPUTS ==========
+    frame_input = Input(shape=input_shape, name='frame', dtype=tf.uint8)
+    elapsed_input = Input(shape=(), name='elapsed_phase')
+    phase_input = Input(shape=(), name='phase', dtype=tf.int32)
+
+    # ========== BACKBONE ==========
+    backbone = create_backbone(
+        trainable_layers=backbone_trainable_layers,
+        input_shape=input_shape
+    )
+
+    # Preprocess frame (Keras 3 compatible)
+    frame_float = ops.cast(frame_input, 'float32')
+    frame_preprocessed = Lambda(
+        lambda x: tf.keras.applications.resnet50.preprocess_input(x)
+    )(frame_float)
+    visual_features = backbone(frame_preprocessed)  # (batch, 2048)
+
+    # ========== TIMING FEATURES ==========
+    # Phase embedding
+    phase_embedding = Embedding(
+        input_dim=NUM_PHASES,
+        output_dim=phase_embedding_dim,
+        name='phase_embedding'
+    )(phase_input)  # (batch, phase_embedding_dim)
+
+    # Normalize elapsed time
+    elapsed_normalized = elapsed_input / 30000.0  # Normalize by typical surgery length
+    elapsed_expanded = ops.expand_dims(elapsed_normalized, axis=-1)  # (batch, 1)
+
+    # ========== COMBINE FEATURES ==========
+    combined = Concatenate(name='feature_concat')([
+        visual_features,
+        phase_embedding,
+        elapsed_expanded
+    ])
+
+    # ========== PREDICTION LAYERS ==========
+    x = Dense(hidden_dim, name='hidden1')(combined)
+    x = BatchNormalization(name='bn1')(x)
+    x = Activation('relu')(x)
+    x = Dropout(dropout_rate)(x)
+
+    x = Dense(hidden_dim // 2, name='hidden2')(x)
+    x = BatchNormalization(name='bn2')(x)
+    x = Activation('relu')(x)
+    x = Dropout(dropout_rate)(x)
+
+    # ========== OUTPUT HEADS ==========
+    # Head 1: Remaining time in current phase
+    remaining_phase = Dense(
+        1,
+        activation='relu',  # Time must be non-negative
+        name='remaining_phase'
+    )(x)
+
+    # Head 2: Future phase start times (6 values for phases 1-6)
+    future_phase_starts = Dense(
+        NUM_PHASES - 1,  # 6 future phases
+        name='future_phase_starts'
+    )(x)
+
+    # ========== BUILD MODEL ==========
+    model = Model(
+        inputs={
+            'frame': frame_input,
+            'elapsed_phase': elapsed_input,
+            'phase': phase_input
+        },
+        outputs={
+            'remaining_phase': remaining_phase,
+            'future_phase_starts': future_phase_starts
+        },
+        name='time_predictor_single_frame'
     )
 
     return model

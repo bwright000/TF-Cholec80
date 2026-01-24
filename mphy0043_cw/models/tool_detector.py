@@ -21,9 +21,10 @@ Tools detected (7 binary classifications):
 """
 
 import tensorflow as tf
-from tensorflow.keras import Model
-from tensorflow.keras.layers import (
-    Input, Dense, Dropout, BatchNormalization, Activation
+import keras
+from keras import Model, ops
+from keras.layers import (
+    Input, Dense, Dropout, BatchNormalization, Activation, Lambda
 )
 
 from .backbone import create_backbone, get_backbone_output_dim
@@ -81,9 +82,11 @@ def create_tool_detector(
         input_shape=input_shape
     )
 
-    # Preprocess and extract features
-    frame_float = tf.cast(frame_input, tf.float32)
-    frame_preprocessed = tf.keras.applications.resnet50.preprocess_input(frame_float)
+    # Preprocess and extract features (Keras 3 compatible)
+    frame_float = ops.cast(frame_input, 'float32')
+    frame_preprocessed = Lambda(
+        lambda x: tf.keras.applications.resnet50.preprocess_input(x)
+    )(frame_float)
     visual_features = backbone(frame_preprocessed)  # (batch, 2048)
 
     # ========== CLASSIFICATION HEAD ==========

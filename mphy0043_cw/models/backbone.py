@@ -41,7 +41,7 @@ def create_backbone(trainable_layers=1, input_shape=(480, 854, 3)):
         base_model.trainable = True
         
         # ResNet-50 has 5 conv blocks: conv1, conv2, conv3, conv4, conv5
-        # We'll freeze everything except the last `trainable_layers` blocks
+        # Freeze everything except the last `trainable_layers` blocks
         # Layer names in ResNet50: conv1_, conv2_, conv3_, conv4_, conv5_
         freeze_until = 5 - trainable_layers  # e.g., trainable_layers=1 → freeze until conv4
         

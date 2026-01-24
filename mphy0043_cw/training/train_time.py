@@ -22,9 +22,13 @@ import numpy as np
 # Add parent directories to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from mphy0043_cw.data.dataloader import get_train_dataset, get_val_dataset
+from mphy0043_cw.data.dataloader import (
+    get_train_dataset, get_val_dataset,
+    get_train_sequence_dataset, get_val_sequence_dataset
+)
 from mphy0043_cw.models.time_predictor import (
     create_time_predictor,
+    create_time_predictor_single_frame,
     weighted_huber_loss,
     future_phase_loss
 )
@@ -36,35 +40,30 @@ from mphy0043_cw.models.time_predictor import (
 
 def prepare_batch_for_time_model(batch):
     """
-    Prepare a batch from the dataloader for the time prediction model.
+    Prepare a batch from the sequence dataloader for the SSM time prediction model.
 
     Args:
-        batch: Batch from dataloader with keys:
-            - frame: (batch, H, W, 3)
-            - phase: (batch,)
-            - elapsed_phase: (batch,)
-            - remaining_phase: (batch,)
-            - future_phase_starts: (batch, 7)
+        batch: Batch from sequence dataloader with keys:
+            - frames: (batch, seq_len, H, W, 3) uint8
+            - phase: (batch, seq_len) int32
+            - elapsed_phase: (batch, seq_len, 1) float32
+            - remaining_phase: (batch, seq_len, 1) float32
+            - future_phase_starts: (batch, seq_len, 6) float32
 
     Returns:
         (inputs, outputs) tuple for model training
     """
-    # Normalize frame to [0, 1]
-    frame = tf.cast(batch['frame'], tf.float32) / 255.0
-
-    # Prepare inputs
-    phase = batch['phase']
-    elapsed = tf.cast(batch['elapsed_phase'], tf.float32)
-
-    inputs = (frame, phase, elapsed)
+    # Prepare inputs as dictionary (matching SSM model input names)
+    inputs = {
+        'frames': batch['frames'],  # (batch, seq_len, H, W, C) uint8
+        'phase': batch['phase'],    # (batch, seq_len) int32
+        'elapsed_phase': batch['elapsed_phase']  # (batch, seq_len, 1) float32
+    }
 
     # Prepare outputs
-    remaining_phase = tf.cast(batch['remaining_phase'], tf.float32)
-    future_starts = tf.cast(batch['future_phase_starts'], tf.float32)
-
     outputs = {
-        'remaining_phase': remaining_phase,
-        'future_phase_starts': future_starts
+        'remaining_phase': batch['remaining_phase'],  # (batch, seq_len, 1)
+        'future_phase_starts': batch['future_phase_starts']  # (batch, seq_len, 6)
     }
 
     return inputs, outputs
@@ -220,21 +219,31 @@ def train_time_predictor(config, data_dir):
 
     checkpoint_dir = config['paths']['checkpoint_dir']
     timing_labels_path = config['paths']['timing_labels_path']
-    batch_size = config['training']['batch_size']
+    # Use smaller batch size for sequence training
+    batch_size = config['training'].get('sequence_batch_size', 2)
 
     # ========== DATA ==========
-    print("\n1. Loading datasets...")
+    print("\n1. Loading sequence datasets...")
 
-    train_ds = get_train_dataset(
+    # Get model config for sequence parameters
+    model_config = config['model']['time_predictor']
+    sequence_length = model_config.get('sequence_length', 64)
+    sequence_stride = model_config.get('sequence_stride', 32)
+
+    # Use sequence datasets for SSM model
+    train_ds = get_train_sequence_dataset(
         data_dir=data_dir,
+        sequence_length=sequence_length,
         batch_size=batch_size,
-        timing_labels_path=timing_labels_path,
-        shuffle=True
+        stride=sequence_stride,
+        timing_labels_path=timing_labels_path
     )
 
-    val_ds = get_val_dataset(
+    val_ds = get_val_sequence_dataset(
         data_dir=data_dir,
+        sequence_length=sequence_length,
         batch_size=batch_size,
+        stride=sequence_length,  # No overlap for validation
         timing_labels_path=timing_labels_path
     )
 
@@ -242,17 +251,14 @@ def train_time_predictor(config, data_dir):
     train_ds = train_ds.map(prepare_batch_for_time_model, num_parallel_calls=tf.data.AUTOTUNE)
     val_ds = val_ds.map(prepare_batch_for_time_model, num_parallel_calls=tf.data.AUTOTUNE)
 
-    train_ds = train_ds.prefetch(tf.data.AUTOTUNE)
-    val_ds = val_ds.prefetch(tf.data.AUTOTUNE)
-
-    print("   Datasets loaded successfully")
+    print("   Sequence datasets loaded successfully")
 
     # ========== MODEL ==========
-    print("\n2. Creating model...")
+    print("\n2. Creating SSM-based model...")
 
-    model_config = config['model']['time_predictor']
-
+    # Use SSM-based model with sequence input
     base_model = create_time_predictor(
+        sequence_length=sequence_length,
         d_model=model_config.get('d_model', 128),
         d_state=model_config.get('d_state', 32),
         n_ssm_blocks=model_config.get('n_ssm_blocks', 2),

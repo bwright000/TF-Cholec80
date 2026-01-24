@@ -60,7 +60,8 @@ model:
     d_state: 32           # State dimension (key memory saver)
     n_ssm_blocks: 2       # Number of SSM blocks
     phase_embedding_dim: 16
-    sequence_length: 1    # Single frame for now (1 for frame-by-frame)
+    sequence_length: 64   # Frames per sequence for SSM temporal modeling
+    sequence_stride: 32   # Stride between sequences (50% overlap for training)
     backbone_trainable_layers: 1
 
   # Task B: Tool Detector (Baseline - visual only)
@@ -74,13 +75,18 @@ model:
     timing_hidden_dim: 64
     combined_hidden_dim: 512
     backbone_trainable_layers: 1
+    # Normalization constants (from Cholec80 dataset statistics)
+    # These should be updated after running preprocessing on your data
+    max_remaining_phase: 5000.0    # ~83 seconds per phase max
+    max_remaining_surgery: 30000.0  # ~500 seconds surgery max (at 1fps)
 
 # =============================================================================
 # TRAINING SETTINGS
 # =============================================================================
 training:
   # Batch size (reduce for OOM errors on 4GB VRAM)
-  batch_size: 8  # Use 4 for full resolution on GTX 970
+  batch_size: 4  # Use 2-4 for sequence training on GTX 970/M2
+  sequence_batch_size: 2  # Even smaller for sequence models (64 frames each)
 
   # Learning rate
   learning_rate: 0.0001  # 1e-4

@@ -343,6 +343,7 @@ def create_dataset(
                             sample['remaining_surgery'] = labels['remaining_surgery'][idx]
                             sample['elapsed_phase'] = labels['elapsed_phase'][idx]
                             sample['phase_progress'] = labels['phase_progress'][idx]
+                            sample['future_phase_starts'] = labels['future_phase_starts'][idx]
 
                 all_samples.append(sample)
 
@@ -374,7 +375,8 @@ def create_dataset(
             'remaining_phase': tf.TensorSpec(shape=(), dtype=tf.int32),
             'remaining_surgery': tf.TensorSpec(shape=(), dtype=tf.int32),
             'elapsed_phase': tf.TensorSpec(shape=(), dtype=tf.int32),
-            'phase_progress': tf.TensorSpec(shape=(), dtype=tf.float32)
+            'phase_progress': tf.TensorSpec(shape=(), dtype=tf.float32),
+            'future_phase_starts': tf.TensorSpec(shape=(NUM_PHASES,), dtype=tf.int32)
         })
 
     ds = tf.data.Dataset.from_generator(generator, output_signature=output_signature)
@@ -400,10 +402,178 @@ def create_dataset(
             output['remaining_surgery'] = sample['remaining_surgery']
             output['elapsed_phase'] = sample['elapsed_phase']
             output['phase_progress'] = sample['phase_progress']
+            output['future_phase_starts'] = sample['future_phase_starts']
 
         return output
 
     ds = ds.map(load_image, num_parallel_calls=tf.data.AUTOTUNE)
+
+    # Batch
+    ds = ds.batch(batch_size)
+
+    # Prefetch
+    ds = ds.prefetch(tf.data.AUTOTUNE)
+
+    return ds
+
+
+# ============================================================================
+# SEQUENCE DATASET (For SSM Time Predictor)
+# ============================================================================
+
+def create_sequence_dataset(
+    data_dir: str,
+    video_ids: List[int],
+    sequence_length: int = 64,
+    batch_size: int = 4,
+    shuffle: bool = True,
+    stride: int = 32,
+    include_timing: bool = True,
+    timing_labels: Optional[Dict] = None
+) -> tf.data.Dataset:
+    """
+    Create a TensorFlow dataset with sequences of consecutive frames.
+
+    This is designed for the SSM-based time predictor which expects:
+        - frames: (batch, seq_len, H, W, C)
+        - elapsed_phase: (batch, seq_len, 1)
+        - phase: (batch, seq_len)
+
+    Args:
+        data_dir: Path to Cholec80 directory
+        video_ids: List of video IDs to include
+        sequence_length: Number of consecutive frames per sequence
+        batch_size: Number of sequences per batch
+        shuffle: Whether to shuffle sequences
+        stride: Step size between sequence start positions (for overlap control)
+        include_timing: Whether to include timing labels
+        timing_labels: Pre-computed timing labels (from preprocessing.py)
+
+    Returns:
+        tf.data.Dataset yielding batches of:
+            {
+                'frames': (batch, seq_len, H, W, 3) uint8
+                'elapsed_phase': (batch, seq_len, 1) float32
+                'phase': (batch, seq_len) int32
+                'remaining_phase': (batch, seq_len, 1) float32 (if include_timing)
+                'future_phase_starts': (batch, seq_len, 6) float32 (if include_timing)
+                'video_id': (batch,) int32
+            }
+    """
+    # Collect all sequences
+    all_sequences = []
+
+    for video_id in video_ids:
+        try:
+            video_data = load_video_data(data_dir, video_id)
+            n_frames = len(video_data['frame_ids'])
+
+            # Skip if video is too short
+            if n_frames < sequence_length:
+                print(f"Warning: Video {video_id} has only {n_frames} frames, skipping")
+                continue
+
+            # Get timing labels for this video
+            video_timing = None
+            if include_timing and timing_labels is not None and video_id in timing_labels:
+                video_timing = timing_labels[video_id]
+
+            # Create sequences with stride
+            for start_idx in range(0, n_frames - sequence_length + 1, stride):
+                end_idx = start_idx + sequence_length
+
+                sequence = {
+                    'video_id': video_id,
+                    'start_idx': start_idx,
+                    'frame_paths': video_data['frame_paths'][start_idx:end_idx].tolist(),
+                    'phases': video_data['phases'][start_idx:end_idx].tolist(),
+                }
+
+                # Add timing labels for the sequence
+                if video_timing is not None:
+                    sequence['elapsed_phase'] = video_timing['elapsed_phase'][start_idx:end_idx].tolist()
+                    sequence['remaining_phase'] = video_timing['remaining_phase'][start_idx:end_idx].tolist()
+                    sequence['future_phase_starts'] = video_timing['future_phase_starts'][start_idx:end_idx].tolist()
+
+                all_sequences.append(sequence)
+
+        except Exception as e:
+            print(f"Warning: Could not load video {video_id}: {e}")
+            continue
+
+    print(f"Created {len(all_sequences)} sequences from {len(video_ids)} videos")
+    print(f"  Sequence length: {sequence_length}, Stride: {stride}")
+
+    # Create dataset from sequences
+    def generator():
+        sequences = all_sequences.copy()
+        if shuffle:
+            np.random.shuffle(sequences)
+        for seq in sequences:
+            yield seq
+
+    # Define output signature
+    output_signature = {
+        'video_id': tf.TensorSpec(shape=(), dtype=tf.int32),
+        'start_idx': tf.TensorSpec(shape=(), dtype=tf.int32),
+        'frame_paths': tf.TensorSpec(shape=(sequence_length,), dtype=tf.string),
+        'phases': tf.TensorSpec(shape=(sequence_length,), dtype=tf.int32),
+    }
+
+    if include_timing and timing_labels is not None:
+        output_signature.update({
+            'elapsed_phase': tf.TensorSpec(shape=(sequence_length,), dtype=tf.int32),
+            'remaining_phase': tf.TensorSpec(shape=(sequence_length,), dtype=tf.int32),
+            'future_phase_starts': tf.TensorSpec(shape=(sequence_length, NUM_PHASES), dtype=tf.int32),
+        })
+
+    ds = tf.data.Dataset.from_generator(generator, output_signature=output_signature)
+
+    # Load and decode images for entire sequence
+    def load_sequence(seq):
+        # Load all frames in sequence
+        def load_single_frame(path):
+            image_data = tf.io.read_file(path)
+            image = tf.io.decode_png(image_data, channels=3)
+            image = tf.ensure_shape(image, [FRAME_HEIGHT, FRAME_WIDTH, FRAME_CHANNELS])
+            return image
+
+        # Map over all frame paths in sequence
+        frames = tf.map_fn(
+            load_single_frame,
+            seq['frame_paths'],
+            fn_output_signature=tf.TensorSpec(
+                shape=[FRAME_HEIGHT, FRAME_WIDTH, FRAME_CHANNELS],
+                dtype=tf.uint8
+            )
+        )  # (seq_len, H, W, C)
+
+        # Build output dictionary
+        output = {
+            'frames': frames,  # (seq_len, H, W, C)
+            'video_id': seq['video_id'],
+            'phase': seq['phases'],  # (seq_len,)
+        }
+
+        if 'elapsed_phase' in seq:
+            # Reshape to (seq_len, 1) and cast to float32
+            output['elapsed_phase'] = tf.cast(
+                tf.expand_dims(seq['elapsed_phase'], axis=-1),
+                tf.float32
+            )
+            output['remaining_phase'] = tf.cast(
+                tf.expand_dims(seq['remaining_phase'], axis=-1),
+                tf.float32
+            )
+            # Take phases 1-6 (not phase 0) for future starts
+            output['future_phase_starts'] = tf.cast(
+                seq['future_phase_starts'][:, 1:],  # (seq_len, 6)
+                tf.float32
+            )
+
+        return output
+
+    ds = ds.map(load_sequence, num_parallel_calls=tf.data.AUTOTUNE)
 
     # Batch
     ds = ds.batch(batch_size)
@@ -464,6 +634,67 @@ def get_test_dataset(
         batch_size=batch_size,
         shuffle=False,
         augment=False,
+        include_timing=True,
+        timing_labels=timing_labels
+    )
+
+
+# Sequence dataset convenience functions
+def get_train_sequence_dataset(
+    data_dir: str,
+    sequence_length: int = 64,
+    batch_size: int = 4,
+    stride: int = 32,
+    timing_labels: Optional[Dict] = None
+) -> tf.data.Dataset:
+    """Get training sequence dataset (videos 01-32)."""
+    return create_sequence_dataset(
+        data_dir=data_dir,
+        video_ids=TRAIN_VIDEO_IDS,
+        sequence_length=sequence_length,
+        batch_size=batch_size,
+        shuffle=True,
+        stride=stride,
+        include_timing=True,
+        timing_labels=timing_labels
+    )
+
+
+def get_val_sequence_dataset(
+    data_dir: str,
+    sequence_length: int = 64,
+    batch_size: int = 4,
+    stride: int = 64,  # No overlap for validation
+    timing_labels: Optional[Dict] = None
+) -> tf.data.Dataset:
+    """Get validation sequence dataset (videos 33-40)."""
+    return create_sequence_dataset(
+        data_dir=data_dir,
+        video_ids=VAL_VIDEO_IDS,
+        sequence_length=sequence_length,
+        batch_size=batch_size,
+        shuffle=False,
+        stride=stride,
+        include_timing=True,
+        timing_labels=timing_labels
+    )
+
+
+def get_test_sequence_dataset(
+    data_dir: str,
+    sequence_length: int = 64,
+    batch_size: int = 4,
+    stride: int = 64,  # No overlap for testing
+    timing_labels: Optional[Dict] = None
+) -> tf.data.Dataset:
+    """Get test sequence dataset (videos 41-80)."""
+    return create_sequence_dataset(
+        data_dir=data_dir,
+        video_ids=TEST_VIDEO_IDS,
+        sequence_length=sequence_length,
+        batch_size=batch_size,
+        shuffle=False,
+        stride=stride,
         include_timing=True,
         timing_labels=timing_labels
     )

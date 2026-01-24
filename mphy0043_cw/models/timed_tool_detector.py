@@ -22,10 +22,11 @@ which tools are being used?
 """
 
 import tensorflow as tf
-from tensorflow.keras import Model
-from tensorflow.keras.layers import (
+import keras
+from keras import Model, ops
+from keras.layers import (
     Input, Dense, Dropout, BatchNormalization,
-    Activation, Concatenate
+    Activation, Concatenate, Lambda
 )
 
 from .backbone import create_backbone, get_backbone_output_dim
@@ -49,7 +50,9 @@ def create_timed_tool_detector(
     combined_hidden_dim=512,
     dropout_rate=0.3,
     backbone_trainable_layers=1,
-    input_shape=(480, 854, 3)
+    input_shape=(480, 854, 3),
+    max_remaining_phase=5000.0,
+    max_remaining_surgery=30000.0
 ):
     """
     Create the timed tool detection model (with timing information).
@@ -72,6 +75,10 @@ def create_timed_tool_detector(
         dropout_rate: Dropout rate for regularization
         backbone_trainable_layers: Number of backbone layers to fine-tune
         input_shape: Shape of input images (H, W, C)
+        max_remaining_phase: Normalization constant for remaining phase frames
+            (from dataset statistics, ~5000 frames typical)
+        max_remaining_surgery: Normalization constant for remaining surgery frames
+            (from dataset statistics, ~30000 frames typical)
 
     Returns:
         Keras Model with inputs:
@@ -99,9 +106,11 @@ def create_timed_tool_detector(
         input_shape=input_shape
     )
 
-    # Preprocess and extract features
-    frame_float = tf.cast(frame_input, tf.float32)
-    frame_preprocessed = tf.keras.applications.resnet50.preprocess_input(frame_float)
+    # Preprocess and extract features (Keras 3 compatible)
+    frame_float = ops.cast(frame_input, 'float32')
+    frame_preprocessed = Lambda(
+        lambda x: tf.keras.applications.resnet50.preprocess_input(x)
+    )(frame_float)
     visual_features = backbone(frame_preprocessed)  # (batch, 2048)
 
     # Process visual features
@@ -111,14 +120,12 @@ def create_timed_tool_detector(
     visual_processed = Dropout(dropout_rate)(visual_processed)
 
     # ========== TIMING BRANCH ==========
-    # Normalize timing features
-    # remaining_phase and remaining_surgery need normalization
-    # Using typical max values: ~30000 frames for surgery, ~5000 for phase
-    remaining_phase_norm = remaining_phase_input / 5000.0  # Normalize
-    remaining_surgery_norm = remaining_surgery_input / 30000.0  # Normalize
+    # Normalize timing features using configurable constants from dataset statistics
+    remaining_phase_norm = remaining_phase_input / max_remaining_phase
+    remaining_surgery_norm = remaining_surgery_input / max_remaining_surgery
 
-    # One-hot encode current phase
-    phase_onehot = tf.one_hot(phase_input, depth=NUM_PHASES)  # (batch, 7)
+    # One-hot encode current phase (Keras 3 compatible)
+    phase_onehot = ops.one_hot(phase_input, num_classes=NUM_PHASES)  # (batch, 7)
 
     # Concatenate all timing features
     timing_features = Concatenate(name='timing_concat')([
@@ -183,7 +190,9 @@ def create_attention_timed_tool_detector(
     combined_hidden_dim=512,
     dropout_rate=0.3,
     backbone_trainable_layers=1,
-    input_shape=(480, 854, 3)
+    input_shape=(480, 854, 3),
+    max_remaining_phase=5000.0,
+    max_remaining_surgery=30000.0
 ):
     """
     Alternative architecture using attention to fuse timing and visual features.
@@ -209,14 +218,17 @@ def create_attention_timed_tool_detector(
         input_shape=input_shape
     )
 
-    frame_float = tf.cast(frame_input, tf.float32)
-    frame_preprocessed = tf.keras.applications.resnet50.preprocess_input(frame_float)
+    frame_float = ops.cast(frame_input, 'float32')
+    frame_preprocessed = Lambda(
+        lambda x: tf.keras.applications.resnet50.preprocess_input(x)
+    )(frame_float)
     visual_features = backbone(frame_preprocessed)
 
     # ========== TIMING BRANCH ==========
-    remaining_phase_norm = remaining_phase_input / 5000.0
-    remaining_surgery_norm = remaining_surgery_input / 30000.0
-    phase_onehot = tf.one_hot(phase_input, depth=NUM_PHASES)
+    # Normalize timing features using configurable constants from dataset statistics
+    remaining_phase_norm = remaining_phase_input / max_remaining_phase
+    remaining_surgery_norm = remaining_surgery_input / max_remaining_surgery
+    phase_onehot = ops.one_hot(phase_input, num_classes=NUM_PHASES)
 
     timing_features = Concatenate()([
         remaining_phase_norm,
@@ -225,24 +237,35 @@ def create_attention_timed_tool_detector(
         phase_onehot
     ])
 
-    # Project timing to same dimension as visual
+    # Project timing to same dimension as visual_hidden_dim
     timing_projected = Dense(visual_hidden_dim, name='timing_proj')(timing_features)
     timing_projected = BatchNormalization()(timing_projected)
     timing_projected = Activation('relu')(timing_projected)
 
     # ========== ATTENTION FUSION ==========
-    # Simple attention: visual features attend to timing context
-    # Compute attention scores
-    visual_query = Dense(64, name='visual_query')(visual_features)
+    # Project visual features to visual_hidden_dim FIRST (to match timing_projected)
+    # This ensures shapes are compatible for element-wise modulation
+    # visual_features: (batch, 2048) -> visual_projected: (batch, visual_hidden_dim)
+    visual_projected = Dense(visual_hidden_dim, name='visual_proj')(visual_features)
+    visual_projected = Dropout(dropout_rate)(visual_projected)  # Regularization
+
+    # Attention mechanism: simplified scalar attention for timing modulation
+    # Uses element-wise product + sum instead of matmul(Q, K^T) for efficiency.
+    # This produces a single attention weight per sample (not per position),
+    # which is intentional for this fusion task where we want global timing
+    # modulation rather than position-wise attention.
+    visual_query = Dense(64, name='visual_query')(visual_projected)
     timing_key = Dense(64, name='timing_key')(timing_projected)
 
-    # Attention weights (scaled dot product)
-    attention_scores = tf.reduce_sum(visual_query * timing_key, axis=-1, keepdims=True)
-    attention_scores = attention_scores / tf.sqrt(64.0)
-    attention_weights = tf.nn.sigmoid(attention_scores)  # Soft gating
+    # Scaled dot product attention (Keras 3 compatible)
+    attention_scores = ops.sum(visual_query * timing_key, axis=-1, keepdims=True)
+    attention_scores = attention_scores / 8.0  # sqrt(64) = 8
+    attention_weights = Activation('sigmoid')(attention_scores)  # Soft gating [0, 1]
 
-    # Apply attention to modulate visual features
-    visual_modulated = visual_features * (1.0 + attention_weights * timing_projected)
+    # Bound timing contribution with tanh to prevent extreme modulation values
+    # This keeps the multiplicative factor in range [1 - attention, 1 + attention]
+    timing_bounded = Activation('tanh')(timing_projected)  # Bounded to [-1, 1]
+    visual_modulated = visual_projected * (1.0 + attention_weights * timing_bounded)
 
     # ========== CLASSIFICATION HEAD ==========
     x = Dense(combined_hidden_dim)(visual_modulated)

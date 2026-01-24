@@ -17,6 +17,7 @@ import numpy as np
 # Import from our dataset module
 from mphy0043_cw.data.dataset import (
     create_dataset,
+    create_sequence_dataset,
     load_video_data,
     TRAIN_VIDEO_IDS,
     VAL_VIDEO_IDS,
@@ -156,6 +157,125 @@ def get_dataset_for_videos(
         batch_size=batch_size,
         shuffle=shuffle,
         augment=False,
+        include_timing=timing_labels is not None,
+        timing_labels=timing_labels
+    )
+
+
+# ============================================================================
+# SEQUENCE DATASETS (For SSM Time Predictor)
+# ============================================================================
+
+def get_train_sequence_dataset(
+    data_dir: str,
+    sequence_length: int = 64,
+    batch_size: int = 4,
+    stride: int = 32,
+    timing_labels_path: Optional[str] = None
+) -> tf.data.Dataset:
+    """
+    Get training sequence dataset (videos 01-32).
+
+    Returns sequences of consecutive frames for SSM-based models.
+
+    Args:
+        data_dir: Path to Cholec80 data directory
+        sequence_length: Number of consecutive frames per sequence
+        batch_size: Number of sequences per batch
+        stride: Step size between sequence starts (controls overlap)
+        timing_labels_path: Path to timing_labels.npz
+
+    Returns:
+        tf.data.Dataset with:
+            - frames: (batch, seq_len, H, W, C)
+            - elapsed_phase: (batch, seq_len, 1)
+            - phase: (batch, seq_len)
+            - remaining_phase: (batch, seq_len, 1)
+            - future_phase_starts: (batch, seq_len, 6)
+    """
+    timing_labels = None
+    if timing_labels_path and os.path.exists(timing_labels_path):
+        timing_labels = load_timing_labels(timing_labels_path)
+
+    return create_sequence_dataset(
+        data_dir=data_dir,
+        video_ids=TRAIN_VIDEO_IDS,
+        sequence_length=sequence_length,
+        batch_size=batch_size,
+        shuffle=True,
+        stride=stride,
+        include_timing=timing_labels is not None,
+        timing_labels=timing_labels
+    )
+
+
+def get_val_sequence_dataset(
+    data_dir: str,
+    sequence_length: int = 64,
+    batch_size: int = 4,
+    stride: int = 64,
+    timing_labels_path: Optional[str] = None
+) -> tf.data.Dataset:
+    """
+    Get validation sequence dataset (videos 33-40).
+
+    Args:
+        data_dir: Path to Cholec80 data directory
+        sequence_length: Number of consecutive frames per sequence
+        batch_size: Number of sequences per batch
+        stride: Step size between sequence starts
+        timing_labels_path: Path to timing_labels.npz
+
+    Returns:
+        tf.data.Dataset with sequence data
+    """
+    timing_labels = None
+    if timing_labels_path and os.path.exists(timing_labels_path):
+        timing_labels = load_timing_labels(timing_labels_path)
+
+    return create_sequence_dataset(
+        data_dir=data_dir,
+        video_ids=VAL_VIDEO_IDS,
+        sequence_length=sequence_length,
+        batch_size=batch_size,
+        shuffle=False,
+        stride=stride,
+        include_timing=timing_labels is not None,
+        timing_labels=timing_labels
+    )
+
+
+def get_test_sequence_dataset(
+    data_dir: str,
+    sequence_length: int = 64,
+    batch_size: int = 4,
+    stride: int = 64,
+    timing_labels_path: Optional[str] = None
+) -> tf.data.Dataset:
+    """
+    Get test sequence dataset (videos 41-80).
+
+    Args:
+        data_dir: Path to Cholec80 data directory
+        sequence_length: Number of consecutive frames per sequence
+        batch_size: Number of sequences per batch
+        stride: Step size between sequence starts
+        timing_labels_path: Path to timing_labels.npz
+
+    Returns:
+        tf.data.Dataset with sequence data
+    """
+    timing_labels = None
+    if timing_labels_path and os.path.exists(timing_labels_path):
+        timing_labels = load_timing_labels(timing_labels_path)
+
+    return create_sequence_dataset(
+        data_dir=data_dir,
+        video_ids=TEST_VIDEO_IDS,
+        sequence_length=sequence_length,
+        batch_size=batch_size,
+        shuffle=False,
+        stride=stride,
         include_timing=timing_labels is not None,
         timing_labels=timing_labels
     )
