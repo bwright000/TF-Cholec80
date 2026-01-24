@@ -12,7 +12,7 @@ This coursework implements a deep learning solution for predicting remaining sur
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/your-repo/TF-Cholec80.git
+git clone https://github.com/bwright000/TF-Cholec80.git
 cd TF-Cholec80
 ```
 
