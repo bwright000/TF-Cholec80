@@ -7,13 +7,6 @@ This coursework implements a deep learning solution for predicting remaining sur
 - **Task A**: Predict remaining time in current surgical phase and estimate future phase start times
 - **Task B**: Use timing predictions to improve surgical tool detection (compared against visual-only baseline)
 
-## Hardware Utilised
-
-Optimized for my local hardware:
-
-- **Apple M2** Silicon Mac
-- 16GB system RAM 
-
 ## Installation
 
 ### 1. Clone the Repository
@@ -32,7 +25,7 @@ conda env create -f mphy0043_cw/environment.yaml
 conda activate mphy0043
 ```
 
-**For Apple Silicon (M2/M3):**
+**For Apple Silicon:**
 
 ```bash
 conda env create -f mphy0043_cw/environment.yaml
@@ -120,21 +113,6 @@ python -m mphy0043_cw.training.train_tools --config mphy0043_cw/config.yaml
 
 # Train Task B: Tool Detection with Timing
 python -m mphy0043_cw.training.train_timed_tools --config mphy0043_cw/config.yaml
-```
-
-### Memory-Efficient Settings
-
-For low VRAM:
-
-```yaml
-# In config.yaml
-training:
-  batch_size: 4  # Reduce if OOM errors
-
-model:
-  time_predictor:
-    d_model: 128   # Keep small
-    d_state: 32    # Key memory saver
 ```
 
 ## Model Architecture
