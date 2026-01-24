@@ -3,6 +3,7 @@
 tf_dataset_test.py
 tf_compat_test.py
 notes.md
+.claude
 tf_cholec80.egg-info/**
 data/**
 nul
