@@ -53,6 +53,7 @@ TOOL_NAMES = [
     'Irrigator',
     'SpecimenBag'
 ]
+<<<<<<< HEAD
 
 # Standard data splits (1-indexed video IDs)
 TRAIN_VIDEO_IDS = list(range(1, 33))    # Videos 01-32
@@ -65,12 +66,17 @@ TEST_VIDEO_IDS = list(range(41, 81))    # Videos 41-80
 # ============================================================================
 
 def parse_phase_annotations(annotation_path: str) -> Dict[int, int]:
+=======
+# Data Extraction from a Single Video
+def extract_video_data(video_id, batch_size=64):
+>>>>>>> 17a222281aaebbbc24aee9d9dc1c3f9b8820f987
     """
     Parse phase annotation file.
 
     Args:
         annotation_path: Path to videoXX-phase.txt
 
+<<<<<<< HEAD
     Returns:
         Dictionary mapping frame_id -> phase_idx
 
@@ -234,6 +240,19 @@ def extract_video_data(data_dir: str, video_id: int) -> Dict:
         # Tool annotations are also at these 25-frame intervals
         tool = frame_to_tools.get(annotation_idx, np.zeros(NUM_TOOLS, dtype=np.int32))
         instruments.append(tool)
+=======
+# Collect data from each batch - First initialise arrays
+    frame_ids =[]
+    phases = []
+    instruments = []
+
+    for batch in ds:
+    # Batch is a dictionary with keys: frame, video_id, frame_id,
+    # total_frames, instruments, phase, end_flag
+        frame_ids.extend(batch['frame_id'].numpy().tolist())
+        phases.extend(batch['phase'].numpy().tolist())
+        instruments.extend(batch['instruments'].numpy().tolist())
+>>>>>>> 17a222281aaebbbc24aee9d9dc1c3f9b8820f987
 
     return {
         'frame_ids': np.array(frame_ids, dtype=np.int32),
@@ -584,5 +603,10 @@ if __name__ == '__main__':
     preprocess_dataset(
         data_dir=args.data_dir,
         video_ids=args.video_ids,
+<<<<<<< HEAD
         output_dir=args.output_dir
+=======
+        output_dir=args.output_dir,
+        batch_size=args.batch_size
+>>>>>>> 17a222281aaebbbc24aee9d9dc1c3f9b8820f987
     )

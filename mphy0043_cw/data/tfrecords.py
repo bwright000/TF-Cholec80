@@ -2,6 +2,8 @@
 TFRecord Conversion for Cholec80 Dataset
 Author: ChatGPT
 Authorised: 22/01/2026
+
+Depriciated as of 22/01/2026 and is no longer required.
 """
 
 import os

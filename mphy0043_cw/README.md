@@ -7,12 +7,12 @@ This coursework implements a deep learning solution for predicting remaining sur
 - **Task A**: Predict remaining time in current surgical phase and estimate future phase start times
 - **Task B**: Use timing predictions to improve surgical tool detection (compared against visual-only baseline)
 
-## Hardware Requirements
+## Hardware Utilised
 
-Optimized for memory-constrained hardware:
-- **NVIDIA GTX 970** (4GB VRAM) or equivalent
+Optimized for my local hardware:
+
 - **Apple M2** Silicon Mac
-- Minimum 16GB system RAM recommended
+- 16GB system RAM 
 
 ## Installation
 
@@ -124,7 +124,7 @@ python -m mphy0043_cw.training.train_timed_tools --config mphy0043_cw/config.yam
 
 ### Memory-Efficient Settings
 
-For 4GB VRAM (GTX 970):
+For low VRAM:
 
 ```yaml
 # In config.yaml
