@@ -336,5 +336,3 @@ if __name__ == '__main__':
 
     print("\n" + "=" * 60)
     print("All tests passed!")
-
-# Terminal script to run this test: python -m mphy0043_cw.models.tool_detector

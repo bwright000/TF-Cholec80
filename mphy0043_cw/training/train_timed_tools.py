@@ -276,5 +276,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-# Terminal script to run this training: python -m mphy0043_cw.training.train_timed_tools --config mphy0043_cw/config.yaml

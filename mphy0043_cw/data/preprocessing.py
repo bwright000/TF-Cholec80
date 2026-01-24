@@ -586,5 +586,3 @@ if __name__ == '__main__':
         video_ids=args.video_ids,
         output_dir=args.output_dir
     )
-
-# Terminal script to run this: python -m mphy0043_cw.data.preprocessing --data_dir /path/to/cholec80 --output_dir mphy0043_cw/results

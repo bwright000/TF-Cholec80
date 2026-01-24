@@ -116,5 +116,3 @@ if __name__ == '__main__':
         means = [np.mean(aug_frames[t]) for t in range(seq_len)]
         is_consistent = all(m == means[0] for m in means)
         print(f"  Temporal Consistency Check: {'PASS' if is_consistent else 'FAIL'}")
-
-# Terminal script to run this test: python -m mphy0043_cw.data.augmentation

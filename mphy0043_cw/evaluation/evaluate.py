@@ -610,5 +610,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-# Terminal script to run this evaluation: python -m mphy0043_cw.evaluation.evaluate

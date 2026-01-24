@@ -199,5 +199,3 @@ if __name__ == '__main__':
     except KeyboardInterrupt:
         print("\nTraining interrupted by user.")
         sys.exit(0)
-
-# Terminal script to run this training: python -m mphy0043_cw.training.train_time --config mphy0043_cw/config.yaml

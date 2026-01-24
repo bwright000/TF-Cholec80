@@ -659,5 +659,3 @@ if __name__ == '__main__':
         print("\nTest complete! Check mphy0043_cw/figures/ for output.")
     else:
         main()
-
-# Terminal script to run this visualization: python -m mphy0043_cw.visualization.generate_figures

@@ -92,7 +92,5 @@ if __name__ == '__main__':
     non_trainable = sum([tf.reduce_prod(v.shape).numpy() for v in backbone.non_trainable_variables])
     print(f"\nTrainable params: {trainable:,}")
     print(f"Non-trainable params: {non_trainable:,}")
-    
-    print("\nTest complete!")
 
-# Terminal script to run this test: python -m mphy0043_cw.models.backbone
+    print("\nTest complete!")

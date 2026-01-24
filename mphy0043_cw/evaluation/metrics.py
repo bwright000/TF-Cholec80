@@ -534,5 +534,3 @@ if __name__ == '__main__':
     print(format_metrics_table(tool_metrics, task='B'))
 
     print("\nAll tests passed!")
-
-# Terminal script to run this test: python -m mphy0043_cw.evaluation.metrics
