@@ -66,7 +66,7 @@ def augment_batch(batch):
         shape = tf.shape(frames)
         B, T = shape[0], shape[1]
         frames_4d = tf.reshape(frames, (-1, IMG_HEIGHT, IMG_WIDTH, 3))
-        frames_4d = tf.image.flip_left_right(frames4_d)
+        frames_4d = tf.image.flip_left_right(frames_4d)
         frames = tf.reshape(frames_4d, (B, T, IMG_HEIGHT, IMG_WIDTH, 3))
 
     # These TF functions support 4D/5D tensors out of the box
