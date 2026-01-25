@@ -18,7 +18,7 @@ cd TF-Cholec80
 
 ### 2. Create Conda Environment
 
-**For Windows/Linux with NVIDIA GPU:**
+**For Windows/Linux:**
 
 ```bash
 conda env create -f mphy0043_cw/environment.yaml
@@ -196,12 +196,6 @@ Following standard Cholec80 protocol:
 - Mean Average Precision (mAP)
 - Per-tool AP
 - Precision, Recall, F1 at threshold 0.5
-
-## Research Questions
-
-1. **RQ1**: Does predicted timing improve tool detection?
-2. **RQ2**: How does time prediction accuracy degrade with horizon?
-3. **RQ3**: Which tools benefit most from timing information?
 
 ## Troubleshooting
 
