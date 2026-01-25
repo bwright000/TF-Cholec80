@@ -41,11 +41,11 @@ model:
   time_predictor:
     d_model: 512          # 
     d_state: 128          # 
-    n_ssm_blocks: 4       # Deeper temporal modeling
+    n_ssm_blocks: 4       # Model Depth
     phase_embedding_dim: 32
     sequence_length: 128  # 
     sequence_stride: 16   
-    use_parallel_scan: True # Flag for FFT-based convolution
+    use_parallel_scan: True # Flag Parallel on Clusters
 
   # Task B: Tool Detector
   tool_detector:
@@ -75,8 +75,8 @@ training:
   dropout_rate: 0.3
   gradient_clip_norm: 1.0
 
-  epochs: 50             # 
-  early_stopping_patience: 15
+  epochs: 20             
+  early_stopping_patience: 5
 
   # Loss weights (Task A)
   remaining_weight: 0.8   # Adjusted for multi-task balance
