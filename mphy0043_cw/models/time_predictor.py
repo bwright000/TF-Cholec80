@@ -354,8 +354,6 @@ def create_time_predictor(
 
     Memory notes:
         - With default settings: ~25M parameters
-        - Recommended batch_size=4 for full resolution on 4GB VRAM
-        - For sequence training, consider batch_size=2 with seq_len=32
     """
     # ========== INPUTS ==========
     # Frame sequence input
