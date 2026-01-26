@@ -79,8 +79,8 @@ training:
   early_stopping_patience: 5
 
   # Loss weights (Task A)
-  remaining_weight: 0.8   # Adjusted for multi-task balance
-  future_weight: 0.6      # Increased importance of future phase starts
+  remaining_weight: 0.57   # Adjusted for multi-task balance
+  future_weight: 0.43      # Increased importance of future phase starts
 
   focal_gamma: 2.0
   focal_alpha: 0.25
