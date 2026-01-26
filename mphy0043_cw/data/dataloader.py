@@ -36,10 +36,11 @@ def get_train_dataset(
     batch_size: int = 8,
     timing_labels_path: Optional[str] = None,
     shuffle: bool = True,
-    augment: bool = True
+    augment: bool = True,
+    video_ids: Optional[List[int]] = None
 ) -> tf.data.Dataset:
     """
-    Get training dataset (videos 01-32).
+    Get training dataset (videos 01-32 by default).
 
     Args:
         data_dir: Path to Cholec80 data directory
@@ -47,6 +48,7 @@ def get_train_dataset(
         timing_labels_path: Path to timing_labels.npz (optional)
         shuffle: Whether to shuffle data
         augment: Whether to apply augmentation
+        video_ids: Optional list of video IDs (1-indexed). Defaults to TRAIN_VIDEO_IDS.
 
     Returns:
         tf.data.Dataset with training data
@@ -55,9 +57,12 @@ def get_train_dataset(
     if timing_labels_path and os.path.exists(timing_labels_path):
         timing_labels = load_timing_labels(timing_labels_path)
 
+    # Use provided video_ids or default to TRAIN_VIDEO_IDS
+    ids_to_use = video_ids if video_ids is not None else TRAIN_VIDEO_IDS
+
     return create_dataset(
         data_dir=data_dir,
-        video_ids=TRAIN_VIDEO_IDS,
+        video_ids=ids_to_use,
         batch_size=batch_size,
         shuffle=shuffle,
         augment=augment,
@@ -69,15 +74,17 @@ def get_train_dataset(
 def get_val_dataset(
     data_dir: str,
     batch_size: int = 8,
-    timing_labels_path: Optional[str] = None
+    timing_labels_path: Optional[str] = None,
+    video_ids: Optional[List[int]] = None
 ) -> tf.data.Dataset:
     """
-    Get validation dataset (videos 33-40).
+    Get validation dataset (videos 33-40 by default).
 
     Args:
         data_dir: Path to Cholec80 data directory
         batch_size: Batch size
         timing_labels_path: Path to timing_labels.npz (optional)
+        video_ids: Optional list of video IDs (1-indexed). Defaults to VAL_VIDEO_IDS.
 
     Returns:
         tf.data.Dataset with validation data
@@ -86,9 +93,12 @@ def get_val_dataset(
     if timing_labels_path and os.path.exists(timing_labels_path):
         timing_labels = load_timing_labels(timing_labels_path)
 
+    # Use provided video_ids or default to VAL_VIDEO_IDS
+    ids_to_use = video_ids if video_ids is not None else VAL_VIDEO_IDS
+
     return create_dataset(
         data_dir=data_dir,
-        video_ids=VAL_VIDEO_IDS,
+        video_ids=ids_to_use,
         batch_size=batch_size,
         shuffle=False,
         augment=False,
@@ -100,15 +110,17 @@ def get_val_dataset(
 def get_test_dataset(
     data_dir: str,
     batch_size: int = 8,
-    timing_labels_path: Optional[str] = None
+    timing_labels_path: Optional[str] = None,
+    video_ids: Optional[List[int]] = None
 ) -> tf.data.Dataset:
     """
-    Get test dataset (videos 41-80).
+    Get test dataset (videos 41-80 by default).
 
     Args:
         data_dir: Path to Cholec80 data directory
         batch_size: Batch size
         timing_labels_path: Path to timing_labels.npz (optional)
+        video_ids: Optional list of video IDs (1-indexed). Defaults to TEST_VIDEO_IDS.
 
     Returns:
         tf.data.Dataset with test data
@@ -117,9 +129,12 @@ def get_test_dataset(
     if timing_labels_path and os.path.exists(timing_labels_path):
         timing_labels = load_timing_labels(timing_labels_path)
 
+    # Use provided video_ids or default to TEST_VIDEO_IDS
+    ids_to_use = video_ids if video_ids is not None else TEST_VIDEO_IDS
+
     return create_dataset(
         data_dir=data_dir,
-        video_ids=TEST_VIDEO_IDS,
+        video_ids=ids_to_use,
         batch_size=batch_size,
         shuffle=False,
         augment=False,
@@ -172,10 +187,11 @@ def get_val_sequence_dataset(
     sequence_length: int = 64,
     batch_size: int = 4,
     stride: int = 64,
-    timing_labels_path: Optional[str] = None
+    timing_labels_path: Optional[str] = None,
+    video_ids: Optional[List[int]] = None
 ) -> tf.data.Dataset:
     """
-    Get validation sequence dataset (videos 33-40).
+    Get validation sequence dataset (videos 33-40 by default).
 
     Args:
         data_dir: Path to Cholec80 data directory
@@ -183,6 +199,7 @@ def get_val_sequence_dataset(
         batch_size: Number of sequences per batch
         stride: Step size between sequence starts
         timing_labels_path: Path to timing_labels.npz
+        video_ids: Optional list of video IDs (1-indexed). Defaults to VAL_VIDEO_IDS.
 
     Returns:
         tf.data.Dataset with sequence data
@@ -191,9 +208,12 @@ def get_val_sequence_dataset(
     if timing_labels_path and os.path.exists(timing_labels_path):
         timing_labels = load_timing_labels(timing_labels_path)
 
+    # Use provided video_ids or default to VAL_VIDEO_IDS
+    ids_to_use = video_ids if video_ids is not None else VAL_VIDEO_IDS
+
     return create_sequence_dataset(
         data_dir=data_dir,
-        video_ids=VAL_VIDEO_IDS,
+        video_ids=ids_to_use,
         sequence_length=sequence_length,
         batch_size=batch_size,
         shuffle=False,
@@ -208,10 +228,11 @@ def get_test_sequence_dataset(
     sequence_length: int = 64,
     batch_size: int = 4,
     stride: int = 64,
-    timing_labels_path: Optional[str] = None
+    timing_labels_path: Optional[str] = None,
+    video_ids: Optional[List[int]] = None
 ) -> tf.data.Dataset:
     """
-    Get test sequence dataset (videos 41-80).
+    Get test sequence dataset (videos 41-80 by default).
 
     Args:
         data_dir: Path to Cholec80 data directory
@@ -219,6 +240,7 @@ def get_test_sequence_dataset(
         batch_size: Number of sequences per batch
         stride: Step size between sequence starts
         timing_labels_path: Path to timing_labels.npz
+        video_ids: Optional list of video IDs (1-indexed). Defaults to TEST_VIDEO_IDS.
 
     Returns:
         tf.data.Dataset with sequence data
@@ -227,9 +249,12 @@ def get_test_sequence_dataset(
     if timing_labels_path and os.path.exists(timing_labels_path):
         timing_labels = load_timing_labels(timing_labels_path)
 
+    # Use provided video_ids or default to TEST_VIDEO_IDS
+    ids_to_use = video_ids if video_ids is not None else TEST_VIDEO_IDS
+
     return create_sequence_dataset(
         data_dir=data_dir,
-        video_ids=TEST_VIDEO_IDS,
+        video_ids=ids_to_use,
         sequence_length=sequence_length,
         batch_size=batch_size,
         shuffle=False,
@@ -244,19 +269,35 @@ def get_train_sequence_dataset(
     batch_size: int = 4,
     stride: int = 32,
     timing_labels_path: Optional[str] = None,
-    augment: bool = True  # Added augment flag
+    augment: bool = True,
+    video_ids: Optional[List[int]] = None
 ) -> tf.data.Dataset:
     """
-    Get training sequence dataset (videos 01-32).
+    Get training sequence dataset (videos 01-32 by default).
+
+    Args:
+        data_dir: Path to Cholec80 data directory
+        sequence_length: Number of consecutive frames per sequence
+        batch_size: Number of sequences per batch
+        stride: Step size between sequence starts
+        timing_labels_path: Path to timing_labels.npz
+        augment: Whether to apply augmentation
+        video_ids: Optional list of video IDs (1-indexed). Defaults to TRAIN_VIDEO_IDS.
+
+    Returns:
+        tf.data.Dataset with sequence data
     """
     timing_labels = None
     if timing_labels_path and os.path.exists(timing_labels_path):
         timing_labels = load_timing_labels(timing_labels_path)
 
+    # Use provided video_ids or default to TRAIN_VIDEO_IDS
+    ids_to_use = video_ids if video_ids is not None else TRAIN_VIDEO_IDS
+
     # 1. Create the base sequence dataset
     dataset = create_sequence_dataset(
         data_dir=data_dir,
-        video_ids=TRAIN_VIDEO_IDS,
+        video_ids=ids_to_use,
         sequence_length=sequence_length,
         batch_size=batch_size,
         shuffle=True,
@@ -267,10 +308,10 @@ def get_train_sequence_dataset(
 
     # 2. Apply sequence-level augmentation if requested
     if augment:
-        # We apply this AFTER batching in create_sequence_dataset 
+        # We apply this AFTER batching in create_sequence_dataset
         # so the function receives (Batch, Seq, H, W, C)
         dataset = dataset.map(
-            augment_batch, 
+            augment_batch,
             num_parallel_calls=tf.data.AUTOTUNE
         )
 

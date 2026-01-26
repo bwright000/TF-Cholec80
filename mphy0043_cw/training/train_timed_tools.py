@@ -85,17 +85,30 @@ def prepare_batch_for_timed_tool_model(batch):
     Returns:
         (inputs, outputs) tuple for model training
     """
-    # Cast and normalize frame
-    frame = tf.cast(batch['frame'], tf.float32)
+    # Keep frame as uint8 - model handles preprocessing internally
+    frame = batch['frame']
+
+    # Model expects timing inputs with shape (batch, 1), so expand dims
+    remaining_phase = tf.cast(batch['remaining_phase'], tf.float32)
+    remaining_surgery = tf.cast(batch['remaining_surgery'], tf.float32)
+    phase_progress = tf.cast(batch['phase_progress'], tf.float32)
+
+    # Expand dims if needed (dataloader provides scalars)
+    if len(remaining_phase.shape) == 1:
+        remaining_phase = tf.expand_dims(remaining_phase, axis=-1)
+    if len(remaining_surgery.shape) == 1:
+        remaining_surgery = tf.expand_dims(remaining_surgery, axis=-1)
+    if len(phase_progress.shape) == 1:
+        phase_progress = tf.expand_dims(phase_progress, axis=-1)
 
     inputs = {
         'frame': frame,
-        'remaining_phase': tf.cast(batch['remaining_phase'], tf.float32),
-        'remaining_surgery': tf.cast(batch['remaining_surgery'], tf.float32),
-        'phase_progress': tf.cast(batch['phase_progress'], tf.float32),
+        'remaining_phase': remaining_phase,
+        'remaining_surgery': remaining_surgery,
+        'phase_progress': phase_progress,
         'phase': tf.cast(batch['phase'], tf.int32)
     }
-    
+
     # Tools/Instruments are the targets
     outputs = tf.cast(batch['instruments'], tf.float32)
 
@@ -144,17 +157,23 @@ def train_timed_tool_detector(config, data_dir):
     # ========== DATA ==========
     print("\n1. Loading datasets...")
 
+    # Use video IDs from config (1-indexed)
+    train_video_ids = config['data'].get('train_videos', None)
+    val_video_ids = config['data'].get('val_videos', None)
+
     train_ds = get_train_dataset(
         data_dir=data_dir,
         batch_size=batch_size,
         timing_labels_path=timing_labels_path,
-        shuffle=True
+        shuffle=True,
+        video_ids=train_video_ids
     )
 
     val_ds = get_val_dataset(
         data_dir=data_dir,
         batch_size=batch_size,
-        timing_labels_path=timing_labels_path
+        timing_labels_path=timing_labels_path,
+        video_ids=val_video_ids
     )
 
     # Prepare batches for timed tool model

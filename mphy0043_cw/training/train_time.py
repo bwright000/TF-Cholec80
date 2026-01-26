@@ -111,7 +111,11 @@ class TimePredictorTrainer(tf.keras.Model):
 def train_time_predictor(config, data_dir):
     batch_size = config['training'].get('batch_size', 64)
     model_config = config['model']['time_predictor']
-    
+
+    # Use video IDs from config (1-indexed)
+    train_video_ids = config['data'].get('train_videos', None)
+    val_video_ids = config['data'].get('val_videos', None)
+
     with strategy.scope():
         # Load Datasets
         train_ds = get_train_sequence_dataset(
@@ -119,7 +123,8 @@ def train_time_predictor(config, data_dir):
             sequence_length=model_config['sequence_length'],
             batch_size=batch_size,
             stride=model_config.get('sequence_stride', 16),
-            timing_labels_path=config['paths']['timing_labels_path']
+            timing_labels_path=config['paths']['timing_labels_path'],
+            video_ids=train_video_ids
         ).map(prepare_batch_for_time_model, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
 
         val_ds = get_val_sequence_dataset(
@@ -127,7 +132,8 @@ def train_time_predictor(config, data_dir):
             sequence_length=model_config['sequence_length'],
             batch_size=batch_size,
             stride=model_config['sequence_length'],
-            timing_labels_path=config['paths']['timing_labels_path']
+            timing_labels_path=config['paths']['timing_labels_path'],
+            video_ids=val_video_ids
         ).map(prepare_batch_for_time_model, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
 
         # Create S4-style SSM Model

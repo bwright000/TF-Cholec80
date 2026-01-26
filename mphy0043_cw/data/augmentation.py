@@ -51,7 +51,6 @@ def augment_batch(batch):
     Input batch contains 'frames' key with shape (Batch, Seq, H, W, C).
     """
     # 1. Cast and normalize parameters for the sequence
-    do_flip = tf.random.uniform([]) > 0.5
     b_delta = tf.random.uniform([], -BRIGHTNESS_DELTA, BRIGHTNESS_DELTA)
     c_factor = tf.random.uniform([], CONTRAST_RANGE[0], CONTRAST_RANGE[1])
     s_factor = tf.random.uniform([], SATURATION_RANGE[0], SATURATION_RANGE[1])
@@ -61,26 +60,36 @@ def augment_batch(batch):
     # We apply the same logic to the entire temporal block
     frames = tf.cast(batch['frames'], tf.float32)
 
-
-    if do_flip:
-        shape = tf.shape(frames)
+    # 3. Apply horizontal flip (50% chance) using tf.cond for graph compatibility
+    def apply_flip(f):
+        shape = tf.shape(f)
         B, T = shape[0], shape[1]
-        frames_4d = tf.reshape(frames, (-1, IMG_HEIGHT, IMG_WIDTH, 3))
+        frames_4d = tf.reshape(f, (-1, IMG_HEIGHT, IMG_WIDTH, 3))
         frames_4d = tf.image.flip_left_right(frames_4d)
-        frames = tf.reshape(frames_4d, (B, T, IMG_HEIGHT, IMG_WIDTH, 3))
+        return tf.reshape(frames_4d, (B, T, IMG_HEIGHT, IMG_WIDTH, 3))
+
+    frames = tf.cond(
+        tf.random.uniform([]) > 0.5,
+        lambda: apply_flip(frames),
+        lambda: frames
+    )
 
     # These TF functions support 4D/5D tensors out of the box
     frames = tf.image.adjust_brightness(frames, b_delta)
     frames = tf.image.adjust_contrast(frames, c_factor)
     frames = tf.image.adjust_saturation(frames, s_factor)
 
-    # 3. Apply Zoom/Crop (50% chance)
-    if tf.random.uniform([]) < 0.5:
-        # We need to map this over the batch dimension
-        frames = tf.map_fn(random_sequence_crop, frames, 
-                           fn_output_signature=tf.float32)
+    # 4. Apply Zoom/Crop (50% chance) using tf.cond for graph compatibility
+    def apply_crop(f):
+        return tf.map_fn(random_sequence_crop, f, fn_output_signature=tf.float32)
 
-    # 4. Finalize
+    frames = tf.cond(
+        tf.random.uniform([]) < 0.5,
+        lambda: apply_crop(frames),
+        lambda: frames
+    )
+
+    # 5. Finalize
     batch['frames'] = tf.cast(tf.clip_by_value(frames, 0, 255), tf.uint8)
     return batch
 
@@ -89,7 +98,6 @@ def get_augmentation_fn(training=True):
 
 if __name__ == '__main__':
     import numpy as np
-    import matplotlib.pyplot as plt
 
     print("Testing Sequence Augmentation Consistency...")
     print("=" * 60)
@@ -98,26 +106,34 @@ if __name__ == '__main__':
     # Using 4 frames is enough to visually check consistency
     seq_len = 4
     dummy_frames = np.zeros((1, seq_len, IMG_HEIGHT, IMG_WIDTH, 3), dtype=np.uint8)
-    
+
     # Draw a small white square in the top-left of every frame
     # This helps us track if 'Horizontal Flip' is consistent
-    dummy_frames[:, :, 50:150, 50:150, :] = 255 
-    
-    batch = {
-        'frames': tf.constant(dummy_frames)
-    }
+    dummy_frames[:, :, 50:150, 50:150, :] = 255
 
     # 2. Run Augmentation
     # We run it a few times to catch different random triggers (flip vs no flip)
+    all_passed = True
     for i in range(3):
-        aug_batch = augment_batch(batch.copy())
-        aug_frames = aug_batch['frames'].numpy()[0] # Remove batch dim
+        # Create fresh batch each time (dict.copy() doesn't work with TF tensors)
+        batch = {'frames': tf.constant(dummy_frames)}
+        aug_batch = augment_batch(batch)
+        aug_frames = aug_batch['frames'].numpy()[0]  # Remove batch dim
 
         print(f"\nRun {i+1}:")
         print(f"  Shape: {aug_frames.shape}")
         print(f"  Dtype: {aug_frames.dtype}")
-        
+
         # Check consistency: Mean pixel value of each frame should be identical
         means = [np.mean(aug_frames[t]) for t in range(seq_len)]
-        is_consistent = all(m == means[0] for m in means)
+        is_consistent = all(abs(m - means[0]) < 1e-5 for m in means)
         print(f"  Temporal Consistency Check: {'PASS' if is_consistent else 'FAIL'}")
+        if not is_consistent:
+            all_passed = False
+
+    print("\n" + "=" * 60)
+    if all_passed:
+        print("All augmentation tests passed!")
+    else:
+        print("Some augmentation tests failed!")
+        exit(1)

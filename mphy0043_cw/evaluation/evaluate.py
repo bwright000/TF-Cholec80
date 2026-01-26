@@ -120,12 +120,17 @@ def evaluate_time_predictor(
                 phases = batch['phase']
                 elapsed = batch.get('elapsed_phase', tf.zeros_like(phases, dtype=tf.float32))
 
+                # For time predictor, we need sequence format
+                # Add sequence dimension for single-frame evaluation
+                frames_seq = tf.expand_dims(frames, axis=1)  # (batch, 1, H, W, C)
+                elapsed_seq = tf.expand_dims(tf.expand_dims(elapsed, axis=-1), axis=1)  # (batch, 1, 1)
+                phases_seq = tf.expand_dims(phases, axis=1)  # (batch, 1)
+
                 # Make prediction
                 inputs = {
-                            'frame': frames,
-                            'remaining_phase': remaining_time,
-                            'phase_progress': phase_progress,
-                            'phase': phases
+                    'frames': frames_seq,
+                    'elapsed_phase': elapsed_seq,
+                    'phase': phases_seq
                 }
                 predictions = model(inputs, training=False)
                 # Extract remaining_phase prediction (first output)
@@ -256,8 +261,14 @@ def evaluate_tool_detector(
 
                     phases = batch['phase']
 
-                    # Make prediction with timing
-                    predictions = model([frames, remaining_time, phase_progress, phases], training=False)
+                    # Make prediction with timing (use dict inputs)
+                    predictions = model({
+                        'frame': frames,
+                        'remaining_phase': tf.expand_dims(remaining_time, axis=-1),
+                        'remaining_surgery': tf.expand_dims(remaining_time, axis=-1),  # Approximate
+                        'phase_progress': tf.expand_dims(phase_progress, axis=-1),
+                        'phase': phases
+                    }, training=False)
                 else:
                     # Visual-only baseline
                     predictions = model(frames, training=False)
@@ -383,8 +394,8 @@ def run_task_a_evaluation(config: dict, data_dir: str, checkpoint_path: str) -> 
         return {}
 
     print(f"Loading timing labels from {timing_labels_path}")
-    timing_data = np.load(timing_labels_path, allow_pickle=True)
-    timing_labels = timing_data['timing_labels'].item()
+    from mphy0043_cw.data.preprocessing import load_timing_labels
+    timing_labels = load_timing_labels(timing_labels_path)
 
     # Create and load model
     print(f"Loading model from {checkpoint_path}")
@@ -398,8 +409,8 @@ def run_task_a_evaluation(config: dict, data_dir: str, checkpoint_path: str) -> 
     model.load_weights(checkpoint_path)
 
     # Evaluate on test set
-    # Convert 0-indexed config to 1-indexed video IDs
-    test_video_ids = [v + 1 for v in config['data']['test_videos']]
+    # Config already uses 1-indexed video IDs (1-80)
+    test_video_ids = config['data']['test_videos']
 
     metrics = evaluate_time_predictor(
         model=model,
@@ -427,11 +438,11 @@ def run_task_b_evaluation(config: dict, data_dir: str, checkpoint_dir: str, time
     timing_labels_path = config['paths']['timing_labels_path']
     timing_labels = None
     if os.path.exists(timing_labels_path):
-        timing_data = np.load(timing_labels_path, allow_pickle=True)
-        timing_labels = timing_data['timing_labels'].item()
+        from mphy0043_cw.data.preprocessing import load_timing_labels
+        timing_labels = load_timing_labels(timing_labels_path)
 
-    # Convert 0-indexed config to 1-indexed video IDs
-    test_video_ids = [v + 1 for v in config['data']['test_videos']]
+    # Config already uses 1-indexed video IDs (1-80)
+    test_video_ids = config['data']['test_videos']
     batch_size = config['training']['batch_size']
 
     results = {}

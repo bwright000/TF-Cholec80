@@ -90,8 +90,8 @@ def prepare_batch_for_tool_model(batch):
     Returns:
         (inputs, outputs) tuple for model training
     """
-    # Normalize frame to [0, 1]
-    frame = tf.cast(batch['frame'], tf.float32)
+    # Keep frame as uint8 - model handles preprocessing internally
+    frame = batch['frame']
     tools = tf.cast(batch['instruments'], tf.float32)
     return frame, tools
 
@@ -149,17 +149,23 @@ def train_tool_detector(config, data_dir):
     # ========== DATA ==========
     print("\n1. Loading datasets...")
 
+    # Use video IDs from config (1-indexed)
+    train_video_ids = config['data'].get('train_videos', None)
+    val_video_ids = config['data'].get('val_videos', None)
+
     train_ds = get_train_dataset(
         data_dir=data_dir,
         batch_size=batch_size,
         timing_labels_path=timing_labels_path,
-        shuffle=True
+        shuffle=True,
+        video_ids=train_video_ids
     )
 
     val_ds = get_val_dataset(
         data_dir=data_dir,
         batch_size=batch_size,
-        timing_labels_path=timing_labels_path
+        timing_labels_path=timing_labels_path,
+        video_ids=val_video_ids
     )
 
     # Prepare batches for tool model

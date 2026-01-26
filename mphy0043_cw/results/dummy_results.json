@@ -1,0 +1,186 @@
+{
+  "task_a": {
+    "mae_frames": 450,
+    "mae_minutes": 7.5,
+    "weighted_mae": 380,
+    "within_2_min": 25.3,
+    "within_5_min": 55.7,
+    "within_10_min": 78.2,
+    "horizon_mae": {
+      "0-5min": {
+        "mae_frames": 120,
+        "mae_minutes": 2.0,
+        "n_samples": 5000
+      },
+      "5-10min": {
+        "mae_frames": 300,
+        "mae_minutes": 5.0,
+        "n_samples": 4000
+      },
+      "10-30min": {
+        "mae_frames": 540,
+        "mae_minutes": 9.0,
+        "n_samples": 8000
+      },
+      "30-infmin": {
+        "mae_frames": 900,
+        "mae_minutes": 15.0,
+        "n_samples": 3000
+      }
+    },
+    "per_phase_mae": {
+      "0": 180,
+      "1": 420,
+      "2": 300,
+      "3": 600,
+      "4": 360,
+      "5": 240,
+      "6": 120
+    }
+  },
+  "task_b": {
+    "baseline": {
+      "mAP": 0.892,
+      "per_tool": {
+        "Grasper": {
+          "ap": 0.9008868084474317
+        },
+        "Bipolar": {
+          "ap": 0.8507321550743958
+        },
+        "Hook": {
+          "ap": 0.8502828720872896
+        },
+        "Scissors": {
+          "ap": 0.9299501378023269
+        },
+        "Clipper": {
+          "ap": 0.8542552481580893
+        },
+        "Irrigator": {
+          "ap": 0.9008254157226373
+        },
+        "SpecimenBag": {
+          "ap": 0.8827547640350687
+        }
+      }
+    },
+    "timed_oracle": {
+      "mAP": 0.921,
+      "per_tool": {
+        "Grasper": {
+          "ap": 0.9092468585573582
+        },
+        "Bipolar": {
+          "ap": 0.9748194407029828
+        },
+        "Hook": {
+          "ap": 0.9668836812509691
+        },
+        "Scissors": {
+          "ap": 0.9014616091104201
+        },
+        "Clipper": {
+          "ap": 0.9533426221320276
+        },
+        "Irrigator": {
+          "ap": 0.9228027657018666
+        },
+        "SpecimenBag": {
+          "ap": 0.9140687530034364
+        }
+      }
+    },
+    "timed_predicted": {
+      "mAP": 0.908,
+      "per_tool": {
+        "Grasper": {
+          "ap": 0.9335601862009121
+        },
+        "Bipolar": {
+          "ap": 0.8699115384978297
+        },
+        "Hook": {
+          "ap": 0.939102629707662
+        },
+        "Scissors": {
+          "ap": 0.9303227712338455
+        },
+        "Clipper": {
+          "ap": 0.8935065896900202
+        },
+        "Irrigator": {
+          "ap": 0.9369147646421772
+        },
+        "SpecimenBag": {
+          "ap": 0.9599190003603731
+        }
+      }
+    },
+    "comparison": {
+      "mAP": {
+        "baseline": 0.892,
+        "timed_oracle": 0.921,
+        "timed_predicted": 0.908,
+        "improvement_oracle": 0.029,
+        "improvement_predicted": 0.016
+      },
+      "per_tool": {
+        "Grasper": {
+          "baseline_ap": 0.85,
+          "oracle_ap": 0.88,
+          "predicted_ap": 0.86,
+          "improvement_oracle": 0.03,
+          "improvement_predicted": -0.004999999999999999
+        },
+        "Bipolar": {
+          "baseline_ap": 0.87,
+          "oracle_ap": 0.9,
+          "predicted_ap": 0.88,
+          "improvement_oracle": 0.03,
+          "improvement_predicted": 0.0
+        },
+        "Hook": {
+          "baseline_ap": 0.89,
+          "oracle_ap": 0.92,
+          "predicted_ap": 0.9,
+          "improvement_oracle": 0.03,
+          "improvement_predicted": 0.005
+        },
+        "Scissors": {
+          "baseline_ap": 0.9099999999999999,
+          "oracle_ap": 0.94,
+          "predicted_ap": 0.9199999999999999,
+          "improvement_oracle": 0.03,
+          "improvement_predicted": 0.01
+        },
+        "Clipper": {
+          "baseline_ap": 0.9299999999999999,
+          "oracle_ap": 0.96,
+          "predicted_ap": 0.94,
+          "improvement_oracle": 0.03,
+          "improvement_predicted": 0.015
+        },
+        "Irrigator": {
+          "baseline_ap": 0.95,
+          "oracle_ap": 0.98,
+          "predicted_ap": 0.96,
+          "improvement_oracle": 0.03,
+          "improvement_predicted": 0.02
+        },
+        "SpecimenBag": {
+          "baseline_ap": 0.97,
+          "oracle_ap": 1.0,
+          "predicted_ap": 0.98,
+          "improvement_oracle": 0.03,
+          "improvement_predicted": 0.025
+        }
+      },
+      "statistical_test": {
+        "t_statistic": 2.45,
+        "p_value": 0.023,
+        "significant_at_005": true
+      }
+    }
+  }
+}
