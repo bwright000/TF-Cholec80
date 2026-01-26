@@ -176,12 +176,20 @@ def train_tool_detector(config, data_dir):
 
     model_config = config['model']['tool_detector']
 
+    # Get input shape from config for memory efficiency
+    input_shape = (
+        config['data'].get('frame_height', 480),
+        config['data'].get('frame_width', 854),
+        config['data'].get('frame_channels', 3)
+    )
+
     # Use the same strategy scope as the timed model
     with strategy.scope():
         model = create_tool_detector(
             hidden_dim=model_config.get('hidden_dim', 512),
             dropout_rate=config['training'].get('dropout_rate', 0.3),
-            backbone_trainable_layers=model_config.get('backbone_trainable_layers', 1)
+            backbone_trainable_layers=model_config.get('backbone_trainable_layers', 1),
+            input_shape=input_shape
         )
 
         optimizer = tf.keras.optimizers.Adam(

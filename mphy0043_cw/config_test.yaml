@@ -1,16 +1,16 @@
-# MPHY0043 Coursework Configuration
-# Real-time Prediction of Remaining Duration in Cholecystectomy Surgery
+# MPHY0043 Coursework - SMALL SCALE TEST Configuration
+# Use this for quick local testing before cluster deployment
 # =============================================================================
-# DATA SETTINGS
+# DATA SETTINGS (REDUCED FOR TESTING)
 # =============================================================================
 data:
-  train_videos: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
-                 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]
-  val_videos: [32, 33, 34, 35, 36, 37, 38, 39]
-  test_videos: [40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55,
-                56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71,
-                72, 73, 74, 75, 76, 77, 78, 79]
+  # Use only 2 videos for training, 1 for val/test
+  train_videos: [0, 1]
+  val_videos: [32]
+  test_videos: [40]
 
+  # NOTE: Images are loaded at 480x854 (original resolution from disk)
+  # Reducing this requires changes to dataset.py image loading pipeline
   frame_height: 480
   frame_width: 854
   frame_channels: 3
@@ -28,59 +28,57 @@ data:
     - "GallbladderPackaging"
 
 # =============================================================================
-# MODEL SETTINGS
+# MODEL SETTINGS (FROZEN BACKBONE FOR SPEED)
 # =============================================================================
 model:
-  # Backbone: Unfrozen
   backbone: "resnet50"
   backbone_weights: "imagenet"
-  backbone_trainable_layers: 0 
+  backbone_trainable_layers: 0  # FROZEN - speeds up testing
   backbone_output_dim: 2048
 
-  # Task A: Time Predictor (Parallelized SSM)
+  # Task A: Time Predictor (Smaller for testing)
   time_predictor:
-    d_model: 512          # 
-    d_state: 128          # 
-    n_ssm_blocks: 4       # Model Depth
+    d_model: 64          # Reduced from 512
+    d_state: 16           # Reduced from 128
+    n_ssm_blocks: 2       # Reduced from 4
     phase_embedding_dim: 32
-    sequence_length: 128  # 
-    sequence_stride: 16   
-    use_parallel_scan: True # Flag Parallel on Clusters
+    sequence_length: 16   # Reduced from 128
+    sequence_stride: 8
+    use_parallel_scan: True
 
-  # Task B: Tool Detector
+  # Task B: Tool Detector (Frozen backbone)
   tool_detector:
-    hidden_dim: 1024      #
-    backbone_trainable_layers: 0  # FROZEN (matches global setting)
+    hidden_dim: 64       # Reduced from 1024
+    backbone_trainable_layers: 0  # FROZEN
 
-  # Task B: Timed Tool Detector
+  # Task B: Timed Tool Detector (Frozen backbone)
   timed_tool_detector:
-    visual_hidden_dim: 1024
-    timing_hidden_dim: 128
-    combined_hidden_dim: 1024
-    backbone_trainable_layers: 0  # FROZEN (matches global setting)
+    visual_hidden_dim: 64  # Reduced from 1024
+    timing_hidden_dim: 8   # Reduced from 128
+    combined_hidden_dim: 64  # Reduced from 1024
+    backbone_trainable_layers: 0  # FROZEN
     max_remaining_phase: 5000.0
     max_remaining_surgery: 30000.0
 
 # =============================================================================
-# TRAINING SETTINGS
+# TRAINING SETTINGS (MINIMAL FOR TESTING)
 # =============================================================================
 training:
-  # Cluster-level Batching
-  batch_size: 64          # 
-  sequence_batch_size: 32 # 
-  
+  batch_size: 4          # Reduced from 64
+  sequence_batch_size: 2  # Reduced from 32
+
   mixed_precision: True
-  
+
   learning_rate: 0.0001
   dropout_rate: 0.3
   gradient_clip_norm: 1.0
 
-  epochs: 20             
-  early_stopping_patience: 5
+  epochs: 2               # Just 2 epochs for smoke test
+  early_stopping_patience: 2
 
   # Loss weights (Task A)
-  remaining_weight: 0.8   # Adjusted for multi-task balance
-  future_weight: 0.6      # Increased importance of future phase starts
+  remaining_weight: 0.8
+  future_weight: 0.6
 
   focal_gamma: 2.0
   focal_alpha: 0.25

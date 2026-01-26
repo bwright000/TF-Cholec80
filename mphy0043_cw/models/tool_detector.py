@@ -29,21 +29,8 @@ from keras.layers import (
 
 from .backbone import create_backbone, get_backbone_output_dim
 
-
-# ============================================================================
-# CONSTANTS
-# ============================================================================
-
-NUM_TOOLS = 7
-TOOL_NAMES = [
-    'Grasper',
-    'Bipolar',
-    'Hook',
-    'Scissors',
-    'Clipper',
-    'Irrigator',
-    'SpecimenBag'
-]
+# Import dataset constants (single source of truth)
+from mphy0043_cw.data.dataset import NUM_TOOLS, TOOL_NAMES
 
 
 # ============================================================================
@@ -135,12 +122,13 @@ def focal_loss(y_true, y_pred, gamma=2.0, alpha=0.25):
     Returns:
         Focal loss value
     """
+    # Cast to float32 for numerical stability (handles mixed precision)
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+
     # Clip predictions to avoid log(0)
     epsilon = tf.keras.backend.epsilon()
     y_pred = tf.clip_by_value(y_pred, epsilon, 1.0 - epsilon)
-
-    # Compute focal loss
-    y_true = tf.cast(y_true, tf.float32)
 
     # For positive examples (y=1)
     pos_loss = -alpha * tf.pow(1 - y_pred, gamma) * tf.math.log(y_pred)
@@ -168,9 +156,12 @@ def weighted_binary_crossentropy(y_true, y_pred, pos_weight=2.0):
     Returns:
         Weighted BCE loss value
     """
+    # Cast to float32 for numerical stability (handles mixed precision)
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+
     epsilon = tf.keras.backend.epsilon()
     y_pred = tf.clip_by_value(y_pred, epsilon, 1.0 - epsilon)
-    y_true = tf.cast(y_true, tf.float32)
 
     # Binary cross-entropy
     bce = -(y_true * tf.math.log(y_pred) + (1 - y_true) * tf.math.log(1 - y_pred))
@@ -252,8 +243,7 @@ def compute_tool_metrics(y_true, y_pred, threshold=0.5):
             'accuracy': accuracy.numpy()
         }
 
-    # Overall metrics (micro-average)
-    total_tp = sum(m['precision'] * 100 for m in metrics.values())  # Placeholder
+    # Overall metrics (macro-average across tools)
     metrics['overall'] = {
         'mean_precision': sum(m['precision'] for m in metrics.values()) / NUM_TOOLS,
         'mean_recall': sum(m['recall'] for m in metrics.values()) / NUM_TOOLS,

@@ -226,10 +226,13 @@ def load_video_data(
             - tools: array of tool vectors (N, 7)
 
     Note on annotation mapping:
-        - Frame files: video01_000001.png, video01_000002.png, ... (1-indexed, at 1fps)
-        - Phase annotations: at 25fps (indices 0, 1, 2, ..., ~43000 for a ~30min video)
-        - Tool annotations: at 1fps intervals (0, 25, 50, ... in annotation indices)
-        - Frame file N corresponds to annotation index (N-1) * 25
+        Cholec80 annotations are stored at 25fps frame indices, but we load frames at 1fps.
+
+        - Frame files: video01_000001.png (frame 1), video01_000002.png (frame 2), ... at 1fps
+        - Annotation files: Use 25fps indices (0, 25, 50, 75, ... for 1fps samples)
+        - Mapping: Frame file N -> annotation index (N-1) * 25
+
+        Example: Frame file 000005.png -> annotation index (5-1)*25 = 100
     """
     frames_dir = os.path.join(data_dir, 'frames')
     phase_dir = os.path.join(data_dir, 'phase_annotations')

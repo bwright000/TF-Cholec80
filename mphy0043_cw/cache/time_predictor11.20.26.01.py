@@ -2,7 +2,7 @@
 Time Predictor Model for MPHY0043 Coursework (Task A).
 
 Predicts remaining time in current surgical phase and future phase start times.
-Uses an S4-style Linear State Space Model (SSM) for efficient temporal modeling.
+Uses a State Space Model (SSM) inspired architecture based on Mamba for efficient temporal modeling.
 
 Architecture:
     RGB Frame → ResNet-50 → 2048-d features
@@ -28,9 +28,6 @@ import numpy as np
 
 # Import backbone (Created in backbone.py)
 from .backbone import create_backbone, get_backbone_output_dim
-
-# Import dataset constants (single source of truth)
-from mphy0043_cw.data.dataset import NUM_PHASES
 
 
 # ============================================================================
@@ -114,40 +111,40 @@ class ReshapeBackToSequence(Layer):
 # CONSTANTS
 # ============================================================================
 
-# NUM_PHASES imported from mphy0043_cw.data.dataset
+NUM_PHASES = 7
 BACKBONE_DIM = 2048  # ResNet-50 output dimension
 
 
 # ============================================================================
-# SSM LAYER (S4-style Linear State Space Model)
+# SSM LAYER (Selective State Space Model - Mamba-inspired)
 # ============================================================================
 
 class SSMLayer(Layer):
     """
-    S4-style Linear State Space Model (SSM) Layer.
-
-    This layer implements an S4-inspired State Space Model optimized for
-    high-throughput training on GPU clusters. It uses FFT-based convolution
-    to efficiently compute the SSM recurrence in parallel.
+    Parallel Selective State Space Model (SSM) Layer.
+    
+    This layer implements a Mamba-inspired State Space Model optimized for 
+    high-throughput training on GPU clusters. It reformulates the 
+    traditionally sequential SSM recurrence as a parallelizable convolution 
+    using the Fast Fourier Transform (FFT).
 
     Mathematical Formulation:
-        Recurrence: h(t) = A*h(t-1) + B*x(t)
-        Output: y(t) = C*h(t) + D*x(t)
-        Convolutional Form: y = x * K, where K = [CB, CAB, CA²B, ..., CA^{L-1}B]
-
-    Key Properties:
-        1. Linear Time-Invariant (LTI): B and C are constant learnable parameters
-           (not input-dependent), enabling valid FFT convolution.
-        2. FFT Convolution: O(L log L) parallel operations for sequence length L.
-        3. Stable A-Parameterization: A is learned in log-space to ensure
+        Recurrence: h(t) = A*h(t-1) + B(x)*x(t)
+        Convolutional Form: y = x * K, where K = [B, AB, A^2B, ..., A^{L-1}B]
+    
+    Key Optimizations for GPU Clusters:
+        1. FFT Convolution: Replaces O(L) sequential loops with O(L log L) 
+           parallel operations, maximizing CUDA core utilization.
+        2. Stable A-Parameterization: Learns A in log-space to ensure 
            system stability (negative real eigenvalues).
-
-    Note: This is NOT a selective/Mamba-style SSM. For input-dependent gating,
-    selectivity should be applied AFTER the SSM computation, not inside it.
+        3. Selective Mechanism: Uses input-dependent projections for B and C, 
+           allowing the model to "forget" irrelevant frames or "focus" on 
+           critical surgical transitions.
 
     Args:
         d_model (int): The number of expected features in the input (channel dimension).
-        d_state (int): The dimension of the hidden state (latent space).
+        d_state (int): The dimension of the hidden state (latent space). 
+            Higher values (e.g., 128-256) are recommended for high-end GPUs.
         dropout_rate (float): Dropout probability applied to the output projection.
         **kwargs: Standard Keras layer keyword arguments.
 
@@ -172,12 +169,12 @@ class SSMLayer(Layer):
         # FFT length = next power of 2 ≥ (2L − 1)
         self.n_fft = 2 ** int(np.ceil(np.log2(2 * self.seq_len - 1)))
 
-        # Input projection
+        # Projections
         self.input_proj = Dense(self.d_model, name='input_proj')
         self.x_to_state = Dense(self.d_state, use_bias=False)
+        self.B_proj = Dense(self.d_state, name='B_proj')
+        self.C_proj = Dense(self.d_state, name='C_proj')
 
-        # SSM parameters (constant, not input-dependent)
-        # A: State transition matrix (learned in log-space for stability)
         self.A_log = self.add_weight(
             name='A_log',
             shape=(self.d_state,),
@@ -185,23 +182,6 @@ class SSMLayer(Layer):
             trainable=True
         )
 
-        # B: Input-to-state matrix (constant, enables valid FFT convolution)
-        self.B = self.add_weight(
-            name='B',
-            shape=(self.d_state,),
-            initializer='glorot_uniform',
-            trainable=True
-        )
-
-        # C: State-to-output matrix (constant, enables valid FFT convolution)
-        self.C = self.add_weight(
-            name='C',
-            shape=(self.d_state,),
-            initializer='glorot_uniform',
-            trainable=True
-        )
-
-        # D: Direct feedthrough (skip connection)
         self.D = self.add_weight(
             name='D',
             shape=(self.d_model,),
@@ -229,7 +209,7 @@ class SSMLayer(Layer):
         A = -tf.exp(tf.cast(self.A_log, tf.float32))
         timesteps = tf.range(self.seq_len, dtype=tf.float32)
         A_powers = tf.exp(A[None, :] * timesteps[:, None])
-
+        
         def ssm_convolution(u, kernel):
             # u: (batch, seq_len, d_state)
             # kernel: (seq_len, d_state)
@@ -259,16 +239,11 @@ class SSMLayer(Layer):
             # Cast back to input dtype for mixed precision
             return tf.cast(y, input_dtype)
 
-        # Compute SSM kernel: K[t] = A^t * B (constant B, valid for FFT convolution)
-        # A_powers: (seq_len, d_state), self.B: (d_state,)
-        kernel = A_powers * tf.cast(self.B[None, :], tf.float32)  # (seq_len, d_state)
+        B = self.B_proj(z)
+        C = self.C_proj(z)
 
-        # Convolve input state with kernel
-        y_state = ssm_convolution(x_state, kernel)
-
-        # Apply constant C as state-to-output projection
-        # self.C: (d_state,) -> broadcast to (batch, seq, d_state)
-        y_state = y_state * tf.cast(self.C[None, None, :], input_dtype)
+        y_state = ssm_convolution(x_state * B, A_powers)
+        y_state = y_state * C
 
         y = self.state_to_output(y_state)
         # Cast D to input dtype for mixed precision compatibility
@@ -360,7 +335,7 @@ def create_time_predictor(
     n_ssm_blocks=2,
     phase_embedding_dim=16,
     dropout_rate=0.3,
-    backbone_trainable_layers=1,
+    backbone_trainable_layers=0,
     input_shape=(480, 854, 3)
 ):
     """
@@ -393,24 +368,12 @@ def create_time_predictor(
         - With default settings: ~25M parameters
     """
     # ========== INPUTS ==========
-    # Frame sequence input
+    # VIDEO FRAMES ONLY - No phase, elapsed time, or progress inputs
+    # This ensures the model learns purely from visual cues (Task A requirement)
     frames_input = Input(
         shape=(sequence_length,) + input_shape,
         name='frames',
         dtype=tf.uint8
-    )
-
-    # Elapsed time in current phase (normalized)
-    elapsed_input = Input(
-        shape=(sequence_length, 1),
-        name='elapsed_phase'
-    )
-
-    # Current phase ID (for embedding)
-    phase_input = Input(
-        shape=(sequence_length,),
-        name='phase',
-        dtype=tf.int32
     )
 
     # ========== BACKBONE (Per-frame feature extraction) ==========
@@ -420,7 +383,6 @@ def create_time_predictor(
     )
 
     # Process frames through backbone (Keras 3 compatible)
-    # Use custom layers to wrap TF ops
     preprocess_layer = FramePreprocessingLayer(
         sequence_length=sequence_length,
         input_shape_hw=input_shape,
@@ -439,29 +401,9 @@ def create_time_predictor(
     )
     visual_features = reshape_layer([features_flat, batch_size])
 
-    # ========== PHASE EMBEDDING ==========
-    phase_embedding = Embedding(
-        input_dim=NUM_PHASES,
-        output_dim=phase_embedding_dim,
-        name='phase_embedding'
-    )(phase_input)  # (batch, seq_len, embed_dim)
-
-    # ========== COMBINE FEATURES ==========
-    # Project visual features to d_model
-    visual_proj = Dense(d_model, name='visual_projection')(visual_features)
-
-    # Project elapsed time
-    elapsed_proj = Dense(d_model // 4, name='elapsed_projection')(elapsed_input)
-
-    # Project phase embedding
-    phase_proj = Dense(d_model // 4, name='phase_projection')(phase_embedding)
-
-    # Concatenate all features
-    combined = Concatenate(name='feature_concat')([
-        visual_proj,
-        elapsed_proj,
-        phase_proj
-    ])
+    # ========== PROJECT VISUAL FEATURES ==========
+    # Project to model dimension (no other inputs - video only)
+    combined = Dense(d_model, name='visual_projection')(visual_features)
 
     # Project to model dimension
     combined = Dense(d_model, name='combined_projection')(combined)
@@ -483,34 +425,49 @@ def create_time_predictor(
     x = LayerNormalization(name='final_norm')(x)
 
     # ========== OUTPUT HEADS ==========
+    # VIDEO-ONLY MODEL: Predict timing directly from visual features
+    # No elapsed time input, so we predict remaining_phase directly
+
     # Shared intermediate layer
     shared = Dense(128, activation='relu', name='shared_dense')(x)
     shared = Dropout(dropout_rate)(shared)
 
-    # Head 1: Remaining time in current phase
+    # Head 1: Remaining time in current phase (direct prediction)
+    # Using softplus to ensure positive output
     remaining_phase = Dense(
         1,
-        activation='relu',  # Time must be non-negative
+        activation='softplus',
         name='remaining_phase'
     )(shared)
 
-    # Head 2: Future phase start times (6 values for phases 1-6)
-    # -1 indicates phase already passed
-    future_phase_starts = Dense(
-        NUM_PHASES - 1,  # 6 future phases
-        name='future_phase_starts'
+    # Head 2: Future phase deltas (Recommendation 2 still applies)
+    # Predict positive deltas between consecutive phases
+    future_phase_deltas = Dense(
+        NUM_PHASES - 1,  # 6 deltas (phase 0→1, 1→2, ..., 5→6)
+        activation='softplus',  # Positive deltas enforce ordering
+        name='future_phase_deltas'
     )(shared)
 
+    # DERIVE absolute start times via cumsum
+    # Starting from remaining_phase (time until current phase ends)
+    future_phase_starts = ops.cumsum(future_phase_deltas, axis=-1)
+    # Add offset: first future phase starts after current phase ends
+    future_phase_starts = future_phase_starts + remaining_phase
+    future_phase_starts = tf.keras.layers.Lambda(
+        lambda x: x, name='future_phase_starts'
+    )(future_phase_starts)
+
     # ========== BUILD MODEL ==========
+    # VIDEO FRAMES ONLY - Pure visual learning for Task A
     model = Model(
         inputs={
-            'frames': frames_input,
-            'elapsed_phase': elapsed_input,
-            'phase': phase_input
+        'frames': batch['frames'],
+        'phase': batch['phase'],
+        'tools': batch['tools'],
         },
         outputs={
-            'remaining_phase': remaining_phase,
-            'future_phase_starts': future_phase_starts
+        'remaining_phase': batch['remaining_phase'],
+        'future_phase_starts': batch['future_phase_starts'],
         },
         name='time_predictor'
     )
@@ -527,7 +484,10 @@ def create_time_predictor_single_frame(
     phase_embedding_dim=16,
     dropout_rate=0.3,
     backbone_trainable_layers=1,
-    input_shape=(480, 854, 3)
+    input_shape=(480, 854, 3),
+    n_phases=7,
+    n_tools=7,
+    n_future_phases=6,
 ):
     """
     Create a simpler single-frame time prediction model.
@@ -552,7 +512,6 @@ def create_time_predictor_single_frame(
     Returns:
         Keras Model with inputs:
             - frame: (batch, H, W, C) - single frame
-            - elapsed_phase: (batch,) - elapsed frames in phase
             - phase: (batch,) - current phase ID
         And outputs:
             - remaining_phase: (batch, 1)
@@ -560,9 +519,10 @@ def create_time_predictor_single_frame(
     """
     # ========== INPUTS ==========
     frame_input = Input(shape=input_shape, name='frame', dtype=tf.uint8)
-    elapsed_input = Input(shape=(), name='elapsed_phase')
-    phase_input = Input(shape=(), name='phase', dtype=tf.int32)
-
+    phase = Input(shape=(sequence_length,),
+                    dtype=tf.int32,
+                    name="phase"),
+    tools = Input(shape=(sequence_length, n_tools), name="tools")
     # ========== BACKBONE ==========
     backbone = create_backbone(
         trainable_layers=backbone_trainable_layers,
@@ -583,7 +543,11 @@ def create_time_predictor_single_frame(
         output_dim=phase_embedding_dim,
         name='phase_embedding'
     )(phase_input)  # (batch, phase_embedding_dim)
-
+    tool_embedding = Embedding(
+        input_dim=NUM_TOOLS,
+        output_dim=tool_embedding_dim,
+        name='tool_embedding'
+    )
     # Normalize elapsed time
     elapsed_normalized = elapsed_input / 30000.0  # Normalize by typical surgery length
     elapsed_expanded = ops.expand_dims(elapsed_normalized, axis=-1)  # (batch, 1)
@@ -592,7 +556,8 @@ def create_time_predictor_single_frame(
     combined = Concatenate(name='feature_concat')([
         visual_features,
         phase_embedding,
-        elapsed_expanded
+        tool_embedding,
+        elapsed_expanded,
     ])
 
     # ========== PREDICTION LAYERS ==========
@@ -736,6 +701,93 @@ def combined_time_loss(y_true_remaining, y_pred_remaining,
     return remaining_weight * loss_remaining + future_weight * loss_future
 
 
+def total_duration_loss(y_true, y_pred, delta=1.0):
+    """
+    Huber loss for total phase duration prediction.
+
+    Total duration is a more stationary target than remaining time,
+    leading to more stable gradients during training.
+
+    Args:
+        y_true: Ground truth total phase durations
+        y_pred: Predicted total phase durations
+        delta: Huber loss delta parameter
+
+    Returns:
+        Huber loss value
+    """
+    # Cast to float32 for numerical stability (handles mixed precision)
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+
+    # Standard Huber loss
+    error = y_true - y_pred
+    abs_error = tf.abs(error)
+    quadratic = tf.minimum(abs_error, delta)
+    linear = abs_error - quadratic
+    huber = 0.5 * quadratic ** 2 + delta * linear
+
+    return tf.reduce_mean(huber)
+
+
+def delta_loss(y_true, y_pred, delta=1.0):
+    """
+    Loss for future phase delta predictions.
+
+    Handles -1 values (phase already passed) by masking them out.
+    Deltas are the time intervals between consecutive phase starts.
+
+    Args:
+        y_true: Ground truth phase deltas, -1 if phase already passed
+        y_pred: Predicted phase deltas (always positive due to softplus)
+
+    Returns:
+        Masked Huber loss
+    """
+    # Cast to float32 for numerical stability (handles mixed precision)
+    y_true = tf.cast(y_true, tf.float32)
+    y_pred = tf.cast(y_pred, tf.float32)
+
+    # Create mask for valid predictions (not -1)
+    mask = tf.cast(y_true >= 0, tf.float32)
+
+    # Huber loss on valid predictions only
+    error = y_true - y_pred
+    abs_error = tf.abs(error)
+    quadratic = tf.minimum(abs_error, delta)
+    linear = abs_error - quadratic
+    huber = 0.5 * quadratic ** 2 + delta * linear
+
+    # Apply mask
+    masked_loss = huber * mask
+
+    # Average over valid predictions only
+    n_valid = tf.maximum(tf.reduce_sum(mask), 1.0)
+    return tf.reduce_sum(masked_loss) / n_valid
+
+
+def combined_time_loss_v2(y_true_total, y_pred_total,
+                          y_true_deltas, y_pred_deltas,
+                          duration_weight=1.0, delta_weight=0.5):
+    """
+    Combined loss for the new prediction approach
+    Args:
+        y_true_total: Ground truth total phase durations
+        y_pred_total: Predicted total phase durations
+        y_true_deltas: Ground truth future phase deltas
+        y_pred_deltas: Predicted future phase deltas
+        duration_weight: Weight for total duration loss
+        delta_weight: Weight for delta loss
+
+    Returns:
+        Combined weighted loss
+    """
+    loss_duration = total_duration_loss(y_true_total, y_pred_total)
+    loss_deltas = delta_loss(y_true_deltas, y_pred_deltas)
+
+    return duration_weight * loss_duration + delta_weight * loss_deltas
+
+
 # ============================================================================
 # TEST
 # ============================================================================
@@ -753,7 +805,7 @@ if __name__ == '__main__':
 
     # Verify shapes are preserved (not collapsed)
     assert ssm_output.shape == test_input.shape, "Output shape mismatch!"
-    print("   [OK] Shape preserved (no scalar collapse)")
+    print("   ✓ Shape preserved (no scalar collapse)")
 
     # Test SSM Block
     print("\n2. Testing SSMBlock...")

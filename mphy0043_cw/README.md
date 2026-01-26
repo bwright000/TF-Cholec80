@@ -144,17 +144,17 @@ RGB Frame → ResNet-50 → 2048-d features
                 ↓
 Concat: [visual_feat, elapsed_time, phase_embedding]
                 ↓
-        SSM Blocks (Mamba-inspired)
+        SSM Blocks (S4-style)
                 ↓
         Prediction Heads:
           - remaining_phase (1 value)
           - future_phase_starts (6 values)
 ```
 
-The SSM (State Space Model) layer implements selective state-space modeling inspired by Mamba, with:
-- Input-dependent B and C matrices (selective mechanism)
-- Stable state dynamics via negative A parameterization
-- Memory-efficient sequential scan
+The SSM (State Space Model) layer implements S4-style Linear State Space modeling with:
+- Constant B and C matrices (enables FFT convolution)
+- Stable state dynamics via negative A parameterization in log-space
+- O(L log L) parallel FFT-based convolution for sequence length L
 
 ### Task B: Tool Detector
 

@@ -30,14 +30,10 @@ from keras.layers import (
 )
 
 from .backbone import create_backbone, get_backbone_output_dim
-from .tool_detector import NUM_TOOLS, TOOL_NAMES, focal_loss, FocalLoss
+from .tool_detector import focal_loss, FocalLoss
 
-
-# ============================================================================
-# CONSTANTS
-# ============================================================================
-
-NUM_PHASES = 7
+# Import dataset constants (single source of truth)
+from mphy0043_cw.data.dataset import NUM_PHASES, NUM_TOOLS, TOOL_NAMES
 
 
 # ============================================================================

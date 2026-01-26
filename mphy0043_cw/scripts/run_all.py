@@ -39,7 +39,7 @@ def run_command(cmd: list, description: str):
 
     try:
         result = subprocess.run(cmd, check=True)
-        print(f"\n✓ {description} completed successfully")
+        print(f"\n[OK] {description} completed successfully")
         return True
     except subprocess.CalledProcessError as e:
         print(f"\n✗ {description} failed with error code {e.returncode}")

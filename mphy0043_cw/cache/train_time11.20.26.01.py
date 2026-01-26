@@ -15,7 +15,14 @@ import json
 import tensorflow as tf
 import numpy as np
 from mphy0043_cw.data.dataloader import get_train_sequence_dataset, get_val_sequence_dataset
-from mphy0043_cw.models.time_predictor import create_time_predictor, weighted_huber_loss, future_phase_loss
+from mphy0043_cw.models.time_predictor import (
+    create_time_predictor,
+    weighted_huber_loss,
+    future_phase_loss,
+    total_duration_loss,
+    delta_loss,
+    combined_time_loss_v2
+)
 
 # ============================================================================
 # GPU CONFIGURATION (must happen before any GPU operations)
@@ -44,13 +51,15 @@ print(f"Number of devices: {strategy.num_replicas_in_sync}")
 # ============================================================================
 
 def prepare_batch_for_time_model(batch):
+    """Prepare batch with new features for recommendations 1, 2, 3."""
     inputs = {
-        'frames': batch['frames'], 
-        'phase': batch['phase'], 
-        'elapsed_phase': batch['elapsed_phase']
+        'frames': batch['frames'],
+        'phase': batch['phase'],
     }
     outputs = {
+        'total_phase_duration': batch['total_phase_duration'],  # Recommendation 1
         'remaining_phase': batch['remaining_phase'],
+        'future_phase_deltas': batch['future_phase_deltas'],  # Recommendation 2
         'future_phase_starts': batch['future_phase_starts']
     }
     return inputs, outputs
@@ -60,11 +69,16 @@ def prepare_batch_for_time_model(batch):
 # ============================================================================
 
 class TimePredictorTrainer(tf.keras.Model):
-    def __init__(self, base_model, remaining_weight=0.8, future_weight=0.6, **kwargs):
+    """
+    Custom trainer for time predictor with new loss functions.
+
+    Uses total_duration_loss and delta_loss per recommendations 1 & 2.
+    """
+    def __init__(self, base_model, duration_weight=1.0, delta_weight=0.6, **kwargs):
         super().__init__(**kwargs)
         self.base_model = base_model
-        self.remaining_weight = remaining_weight
-        self.future_weight = future_weight
+        self.duration_weight = duration_weight
+        self.delta_weight = delta_weight
         self.loss_tracker = tf.keras.metrics.Mean(name='loss')
         self.mae_metric = tf.keras.metrics.MeanAbsoluteError(name='mae')
 
@@ -77,11 +91,20 @@ class TimePredictorTrainer(tf.keras.Model):
         with tf.GradientTape() as tape:
             predictions = self(inputs, training=True)
 
-            # Loss computation
-            loss_rem = weighted_huber_loss(outputs['remaining_phase'], predictions['remaining_phase'])
-            loss_fut = future_phase_loss(outputs['future_phase_starts'], predictions['future_phase_starts'])
+            # NEW: Loss on total_phase_duration (Recommendation 1)
+            loss_duration = total_duration_loss(
+                outputs['total_phase_duration'],
+                predictions['total_phase_duration']
+            )
 
-            total_loss = (self.remaining_weight * loss_rem + self.future_weight * loss_fut)
+            # NEW: Loss on future_phase_deltas (Recommendation 2)
+            loss_deltas = delta_loss(
+                outputs['future_phase_deltas'],
+                predictions['future_phase_deltas']
+            )
+
+            total_loss = (self.duration_weight * loss_duration +
+                         self.delta_weight * loss_deltas)
 
         # Keras 3: LossScaleOptimizer handles scaling automatically
         gradients = tape.gradient(total_loss, self.trainable_variables)
@@ -89,19 +112,39 @@ class TimePredictorTrainer(tf.keras.Model):
         self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
 
         self.loss_tracker.update_state(total_loss)
-        self.mae_metric.update_state(outputs['remaining_phase'], predictions['remaining_phase'])
+        # MAE on derived remaining_phase for interpretability
+        self.mae_metric.update_state(
+            tf.cast(outputs['remaining_phase'], tf.float32),
+            tf.cast(predictions['remaining_phase'], tf.float32)
+        )
         return {"loss": self.loss_tracker.result(), "mae": self.mae_metric.result()}
 
     @tf.function
     def test_step(self, data):
         inputs, outputs = data
         predictions = self(inputs, training=False)
-        loss_rem = weighted_huber_loss(outputs['remaining_phase'], predictions['remaining_phase'])
-        loss_fut = future_phase_loss(outputs['future_phase_starts'], predictions['future_phase_starts'])
-        total_loss = (self.remaining_weight * loss_rem + self.future_weight * loss_fut)
+
+        # NEW: Loss on total_phase_duration (Recommendation 1)
+        loss_duration = total_duration_loss(
+            outputs['total_phase_duration'],
+            predictions['total_phase_duration']
+        )
+
+        # NEW: Loss on future_phase_deltas (Recommendation 2)
+        loss_deltas = delta_loss(
+            outputs['future_phase_deltas'],
+            predictions['future_phase_deltas']
+        )
+
+        total_loss = (self.duration_weight * loss_duration +
+                     self.delta_weight * loss_deltas)
 
         self.loss_tracker.update_state(total_loss)
-        self.mae_metric.update_state(outputs['remaining_phase'], predictions['remaining_phase'])
+        # MAE on derived remaining_phase for interpretability
+        self.mae_metric.update_state(
+            tf.cast(outputs['remaining_phase'], tf.float32),
+            tf.cast(predictions['remaining_phase'], tf.float32)
+        )
         return {"loss": self.loss_tracker.result(), "mae": self.mae_metric.result()}
 
 # ============================================================================
@@ -130,13 +173,21 @@ def train_time_predictor(config, data_dir):
             timing_labels_path=config['paths']['timing_labels_path']
         ).map(prepare_batch_for_time_model, num_parallel_calls=tf.data.AUTOTUNE).prefetch(tf.data.AUTOTUNE)
 
-        # Create S4-style SSM Model
+        # Get input shape from config for memory efficiency
+        input_shape = (
+            config['data'].get('frame_height', 480),
+            config['data'].get('frame_width', 854),
+            config['data'].get('frame_channels', 3)
+        )
+
+        # Create Parallel SSM Model
         base_model = create_time_predictor(
             sequence_length=model_config['sequence_length'],
             d_model=model_config['d_model'],
             d_state=model_config['d_state'],
             n_ssm_blocks=model_config['n_ssm_blocks'],
-            backbone_trainable_layers=config['model'].get('backbone_trainable_layers', 0)
+            backbone_trainable_layers=config['model'].get('backbone_trainable_layers', 0),
+            input_shape=input_shape
         )
 
         model = TimePredictorTrainer(
