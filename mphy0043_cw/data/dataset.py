@@ -24,6 +24,7 @@ Expected directory structure:
 Frame naming: videoXX_NNNNNN.png (sequential frame numbers starting at 1)
 Phase annotations: "Frame\\tPhase" where Frame is 0, 1, 2, ... (1fps sequential)
 Tool annotations: "Frame\\tGrasper\\t..." where Frame is 0, 25, 50, ... (25fps intervals)
+\\t is meant to represent a tab character :melting:.
 """
 
 import os

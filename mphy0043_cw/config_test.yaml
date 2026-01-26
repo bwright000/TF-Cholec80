@@ -5,9 +5,9 @@
 # =============================================================================
 data:
   # Use only 2 videos for training, 1 for val/test
-  train_videos: [0, 1]
-  val_videos: [32]
-  test_videos: [40]
+  train_videos: [1, 2]
+  val_videos: [33]
+  test_videos: [41]
 
   # NOTE: Images are loaded at 480x854 (original resolution from disk)
   # Reducing this requires changes to dataset.py image loading pipeline
@@ -42,8 +42,8 @@ model:
     d_state: 16           # Reduced from 128
     n_ssm_blocks: 2       # Reduced from 4
     phase_embedding_dim: 32
-    sequence_length: 16   # Reduced from 128
-    sequence_stride: 8
+    sequence_length: 8   # Reduced from 128
+    sequence_stride: 4
     use_parallel_scan: True
 
   # Task B: Tool Detector (Frozen backbone)
