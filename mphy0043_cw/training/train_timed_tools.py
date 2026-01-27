@@ -13,8 +13,8 @@ Usage:
 # Disable cuDNN to avoid library loading issues on cluster
 # ============================================================================
 import os
-os.environ['TF_USE_CUDNN'] = '0'
-os.environ['TF_CUDNN_USE_AUTOTUNE'] = '0'
+# os.environ['TF_USE_CUDNN'] = '0'
+# os.environ['TF_CUDNN_USE_AUTOTUNE'] = '0'
 
 import sys
 import argparse
