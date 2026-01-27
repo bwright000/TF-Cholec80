@@ -104,15 +104,50 @@ class TimePredictorTrainer(tf.keras.Model):
         self.mae_metric.update_state(outputs['remaining_phase'], predictions['remaining_phase'])
         return {"loss": self.loss_tracker.result(), "mae": self.mae_metric.result()}
 
+
+class BaseModelCheckpoint(tf.keras.callbacks.Callback):
+    """Custom callback to save base_model (not the wrapper) after every epoch."""
+
+    def __init__(self, base_model, checkpoint_dir, monitor='val_mae'):
+        super().__init__()
+        self.base_model = base_model
+        self.checkpoint_dir = checkpoint_dir
+        self.monitor = monitor
+        self.best = float('inf')
+        self.best_epoch = 0
+
+    def on_epoch_end(self, epoch, logs=None):
+        current = logs.get(self.monitor)
+
+        # Save this epoch's model
+        epoch_path = os.path.join(self.checkpoint_dir, f'time_predictor_epoch_{epoch+1}.keras')
+        self.base_model.save(epoch_path)
+        print(f"\nSaved epoch {epoch+1} model to {epoch_path}")
+
+        # Track best and save as main checkpoint
+        if current is not None and current < self.best:
+            self.best = current
+            self.best_epoch = epoch + 1
+            best_path = os.path.join(self.checkpoint_dir, 'time_predictor.keras')
+            self.base_model.save(best_path)
+            print(f"New best model (val_mae={current:.4f}) saved to {best_path}")
+
+    def on_train_end(self, logs=None):
+        print(f"\nTraining complete. Best model was epoch {self.best_epoch} (val_mae={self.best:.4f})")
+
 # ============================================================================
 # MAIN TRAINING LOOP
 # ============================================================================
 
 def train_time_predictor(config, data_dir):
     # Use sequence_batch_size (not batch_size) for sequence data
-    # Memory: batch × seq_len × H × W × C × 4 bytes = batch × 128 × 480 × 854 × 3 × 4
+    # Memory: batch × seq_len × H × W × C × 4 bytes = batch × 64 × 480 × 854 × 3 × 4
     batch_size = config['training'].get('sequence_batch_size', 4)
     model_config = config['model']['time_predictor']
+
+    # Ensure checkpoint directory exists
+    checkpoint_dir = config['paths']['checkpoint_dir']
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Use video IDs from config (1-indexed)
     train_video_ids = config['data'].get('train_videos', None)
@@ -158,18 +193,13 @@ def train_time_predictor(config, data_dir):
         model.compile(optimizer=optimizer)
 
     # Callbacks and Fitting
+    # Save every epoch + track best model
     callbacks = [
-        tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(config['paths']['checkpoint_dir'], 'time_predictor_best.keras'),
-            save_best_only=True, monitor='val_mae'
-        ),
+        BaseModelCheckpoint(base_model, checkpoint_dir, monitor='val_mae'),
         tf.keras.callbacks.EarlyStopping(monitor='val_mae', patience=5)
     ]
 
     model.fit(train_ds, validation_data=val_ds, epochs=20, callbacks=callbacks)
-    
-    # Save results
-    base_model.save(os.path.join(config['paths']['checkpoint_dir'], 'time_predictor_final.keras'))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Train Time Predictor (Task A)')

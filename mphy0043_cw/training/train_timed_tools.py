@@ -151,6 +151,7 @@ def train_timed_tool_detector(config, data_dir):
     print("=" * 60)
 
     checkpoint_dir = config['paths']['checkpoint_dir']
+    os.makedirs(checkpoint_dir, exist_ok=True)
     timing_labels_path = config['paths']['timing_labels_path']
     batch_size = config['training']['batch_size']
 
