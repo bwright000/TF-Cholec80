@@ -43,7 +43,7 @@ model:
     d_state: 128          # 
     n_ssm_blocks: 4       # Model Depth
     phase_embedding_dim: 32
-    sequence_length: 128  # 
+    sequence_length: 64   # ~1 min temporal context at 1fps 
     sequence_stride: 16   
     use_parallel_scan: True # Flag Parallel on Clusters
 
@@ -66,8 +66,8 @@ model:
 # =============================================================================
 training:
   # Cluster-level Batching
-  batch_size: 64          # 
-  sequence_batch_size: 32 # 
+  batch_size: 64          # For single-frame tasks (tool detection)
+  sequence_batch_size: 8  # For sequence tasks (time prediction) - keep low due to memory 
   
   mixed_precision: True
   

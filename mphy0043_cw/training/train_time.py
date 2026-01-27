@@ -109,7 +109,9 @@ class TimePredictorTrainer(tf.keras.Model):
 # ============================================================================
 
 def train_time_predictor(config, data_dir):
-    batch_size = config['training'].get('batch_size', 64)
+    # Use sequence_batch_size (not batch_size) for sequence data
+    # Memory: batch × seq_len × H × W × C × 4 bytes = batch × 128 × 480 × 854 × 3 × 4
+    batch_size = config['training'].get('sequence_batch_size', 4)
     model_config = config['model']['time_predictor']
 
     # Use video IDs from config (1-indexed)
