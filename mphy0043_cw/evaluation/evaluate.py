@@ -9,7 +9,14 @@ Usage:
     python -m mphy0043_cw.evaluation.evaluate --config mphy0043_cw/config.yaml --task all
 """
 
+# ============================================================================
+# ENVIRONMENT SETUP (must be before TensorFlow import)
+# Disable cuDNN to avoid library loading issues on cluster
+# ============================================================================
 import os
+os.environ['TF_USE_CUDNN'] = '0'
+os.environ['TF_CUDNN_USE_AUTOTUNE'] = '0'
+
 import sys
 import json
 import argparse
