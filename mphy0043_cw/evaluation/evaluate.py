@@ -400,6 +400,7 @@ def run_task_a_evaluation(config: dict, data_dir: str, checkpoint_path: str) -> 
     # Create and load model
     print(f"Loading model from {checkpoint_path}")
     model = create_time_predictor(
+        sequence_length=config['model']['time_predictor']['sequence_length'],
         d_model=config['model']['time_predictor']['d_model'],
         d_state=config['model']['time_predictor']['d_state'],
         n_ssm_blocks=config['model']['time_predictor']['n_ssm_blocks'],
