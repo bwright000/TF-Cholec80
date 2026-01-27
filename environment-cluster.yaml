@@ -1,0 +1,16 @@
+name: tf-cholec80
+channels:
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.11
+  - cuda-toolkit=12.4
+  - cudnn=9.*
+  - pip
+  - pip:
+    - tensorflow==2.18.*
+    - numpy
+    - pyyaml
+    - tqdm
+    - matplotlib
+    - scipy
