@@ -8,7 +8,14 @@ Usage:
     python -m mphy0043_cw.training.train_timed_tools --config mphy0043_cw/config.yaml --data_dir /path/to/cholec80
 """
 
+# ============================================================================
+# ENVIRONMENT SETUP (must be before TensorFlow import)
+# Disable cuDNN to avoid library loading issues on cluster
+# ============================================================================
 import os
+os.environ['TF_USE_CUDNN'] = '0'
+os.environ['TF_CUDNN_USE_AUTOTUNE'] = '0'
+
 import sys
 import argparse
 import yaml
