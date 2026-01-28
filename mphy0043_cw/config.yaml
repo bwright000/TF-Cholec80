@@ -34,7 +34,7 @@ model:
   # Backbone: Unfrozen
   backbone: "resnet50"
   backbone_weights: "imagenet"
-  backbone_trainable_layers: 0 
+  backbone_trainable_layers: 1 
   backbone_output_dim: 2048
 
   # Task A: Time Predictor (Parallelized SSM)
@@ -50,14 +50,14 @@ model:
   # Task B: Tool Detector
   tool_detector:
     hidden_dim: 1024      #
-    backbone_trainable_layers: 0  # FROZEN (matches global setting)
+    backbone_trainable_layers: 1  # FROZEN (matches global setting)
 
   # Task B: Timed Tool Detector
   timed_tool_detector:
     visual_hidden_dim: 1024
     timing_hidden_dim: 128
     combined_hidden_dim: 1024
-    backbone_trainable_layers: 0  # FROZEN (matches global setting)
+    backbone_trainable_layers: 1  # FROZEN (matches global setting)
     max_remaining_phase: 5000.0
     max_remaining_surgery: 30000.0
 
