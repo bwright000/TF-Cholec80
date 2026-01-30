@@ -1,3 +1,48 @@
 {
-  "task_b": {}
+  "task_a": {
+    "mae_frames": 393.43,
+    "mae_minutes": 6.56,
+    "within_2_min": 39.3,
+    "within_5_min": 59.0,
+    "within_10_min": 76.9,
+    "total_samples": 98194
+  },
+  "task_b": {
+    "baseline": {
+      "mAP": 0.8690,
+      "precision": 0.760,
+      "recall": 0.861,
+      "f1": 0.808,
+      "per_tool": {
+        "Grasper": {"ap": 0.857, "prec": 0.760, "recall": 0.861, "f1": 0.808},
+        "Bipolar": {"ap": 0.881, "prec": 0.838, "recall": 0.812, "f1": 0.825},
+        "Hook": {"ap": 0.983, "prec": 0.957, "recall": 0.931, "f1": 0.944},
+        "Scissors": {"ap": 0.677, "prec": 0.961, "recall": 0.241, "f1": 0.385},
+        "Clipper": {"ap": 0.937, "prec": 0.955, "recall": 0.808, "f1": 0.875},
+        "Irrigator": {"ap": 0.816, "prec": 0.854, "recall": 0.733, "f1": 0.789},
+        "SpecimenBag": {"ap": 0.931, "prec": 0.926, "recall": 0.809, "f1": 0.863}
+      }
+    },
+    "timed_oracle": {
+      "mAP": 0.9144,
+      "precision": 0.862,
+      "recall": 0.914,
+      "f1": 0.887,
+      "per_tool": {
+        "Grasper": {"ap": 0.886, "prec": 0.773, "recall": 0.889, "f1": 0.827},
+        "Bipolar": {"ap": 0.906, "prec": 0.931, "recall": 0.782, "f1": 0.850},
+        "Hook": {"ap": 0.987, "prec": 0.944, "recall": 0.965, "f1": 0.954},
+        "Scissors": {"ap": 0.872, "prec": 0.899, "recall": 0.755, "f1": 0.821},
+        "Clipper": {"ap": 0.964, "prec": 0.912, "recall": 0.931, "f1": 0.921},
+        "Irrigator": {"ap": 0.845, "prec": 0.755, "recall": 0.837, "f1": 0.794},
+        "SpecimenBag": {"ap": 0.940, "prec": 0.895, "recall": 0.835, "f1": 0.864}
+      }
+    },
+    "comparison": {
+      "mAP_improvement": 0.0454,
+      "t_statistic": -7.293,
+      "p_value": 0.0000,
+      "significant": true
+    }
+  }
 }
