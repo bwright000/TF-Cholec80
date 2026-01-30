@@ -1,21 +1,24 @@
-# Conda environment for MPHY0043 Coursework
+# Conda/Micromamba Environment for MPHY0043 Coursework
 # Real-time Prediction of Remaining Duration in Cholecystectomy Surgery
 # ============================================================================
 #
-# INSTALLATION OPTIONS:
+# INSTALLATION (Compatible with both Conda and Micromamba):
 #
 # Option 1: GPU Cluster (Recommended for training)
-#   conda env create -f environment.yaml
-#   conda activate mphy0043
-#   pip install tensorflow[and-cuda]  # For NVIDIA GPU support
+#   conda env create -f environment.yaml      # OR
+#   micromamba env create -f environment.yaml
+#   conda activate mphy0043                   # OR micromamba activate mphy0043
+#   pip install tensorflow[and-cuda]          # For NVIDIA GPU support
 #
 # Option 2: Local Machine (Windows/Linux with NVIDIA GPU)
-#   conda env create -f environment.yaml
-#   conda activate mphy0043
+#   conda env create -f environment.yaml      # OR
+#   micromamba env create -f environment.yaml
+#   conda activate mphy0043                   # OR micromamba activate mphy0043
 #
 # Option 3: Apple Silicon (M1/M2/M3 Mac)
-#   conda env create -f environment.yaml
-#   conda activate mphy0043
+#   conda env create -f environment.yaml      # OR
+#   micromamba env create -f environment.yaml
+#   conda activate mphy0043                   # OR micromamba activate mphy0043
 #   pip uninstall tensorflow
 #   pip install tensorflow-macos tensorflow-metal
 #

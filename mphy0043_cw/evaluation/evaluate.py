@@ -74,6 +74,11 @@ def evaluate_time_predictor(
     """
     Evaluate time prediction model on a set of videos.
 
+    Evaluates:
+    - remaining_phase: Time left in current phase
+    - remaining_surgery: Total time until end of surgery
+    - future_phase_starts: Time until each future phase begins
+
     Args:
         model: Trained time predictor model
         data_dir: Path to Cholec80 data directory
@@ -84,10 +89,19 @@ def evaluate_time_predictor(
     Returns:
         Dictionary with all evaluation metrics
     """
-    all_y_true = []
-    all_y_pred = []
+    # Remaining phase predictions
+    all_remaining_true = []
+    all_remaining_pred = []
     all_phases = []
     all_video_ids = []
+
+    # Remaining surgery predictions
+    all_surgery_true = []
+    all_surgery_pred = []
+
+    # Future phase start predictions (6 phases: 1-6, not phase 0)
+    all_future_true = []  # List of (n_samples, 6) arrays
+    all_future_pred = []
 
     print(f"Evaluating on {len(video_ids)} videos...")
 
@@ -114,8 +128,12 @@ def evaluate_time_predictor(
             )
 
             # Collect predictions
-            video_y_true = []
-            video_y_pred = []
+            video_remaining_true = []
+            video_remaining_pred = []
+            video_surgery_true = []
+            video_surgery_pred = []
+            video_future_true = []
+            video_future_pred = []
             video_phases = []
 
             for batch in ds:
@@ -137,27 +155,75 @@ def evaluate_time_predictor(
                     'phase': phases_seq
                 }
                 predictions = model(inputs, training=False)
-                # Extract remaining_phase prediction (first output)
+
+                # Extract predictions
                 if isinstance(predictions, dict):
                     pred_remaining = predictions['remaining_phase']
+                    pred_future = predictions.get('future_phase_starts', None)
                 elif isinstance(predictions, (list, tuple)):
                     pred_remaining = predictions[0]
+                    pred_future = predictions[1] if len(predictions) > 1 else None
                 else:
                     pred_remaining = predictions
+                    pred_future = None
 
-                # Get ground truth
-                true_remaining = batch['remaining_phase']
+                # Get ground truth - remaining phase
+                true_remaining = batch.get('remaining_phase', None)
+                if true_remaining is None:
+                    print(f"  Warning: batch missing 'remaining_phase' key, skipping...")
+                    continue
+                video_remaining_true.extend(true_remaining.numpy().flatten())
+                video_remaining_pred.extend(pred_remaining.numpy().flatten())
 
-                video_y_true.extend(true_remaining.numpy().flatten())
-                video_y_pred.extend(pred_remaining.numpy().flatten())
+                # Get ground truth - remaining surgery
+                true_surgery = batch.get('remaining_surgery', None)
+                if true_surgery is not None:
+                    video_surgery_true.extend(true_surgery.numpy().flatten())
+                    # Estimate surgery remaining from future_phase_starts
+                    # (max future start + estimated final phase duration)
+                    if pred_future is not None:
+                        # Take the max predicted future start as approx surgery remaining
+                        pred_future_np = pred_future.numpy()
+                        # Shape: (batch, 1, 6) -> squeeze to (batch, 6)
+                        if len(pred_future_np.shape) == 3:
+                            pred_future_np = pred_future_np[:, 0, :]
+                        # Max across phases (ignoring negatives)
+                        pred_surgery = np.max(np.maximum(pred_future_np, 0), axis=-1)
+                        # Add remaining_phase to get total
+                        pred_surgery = pred_surgery + pred_remaining.numpy().flatten()
+                        video_surgery_pred.extend(pred_surgery)
+                    else:
+                        # Fallback: use remaining_phase as lower bound
+                        video_surgery_pred.extend(pred_remaining.numpy().flatten())
+
+                # Get ground truth - future phase starts
+                true_future = batch.get('future_phase_starts', None)
+                if true_future is not None and pred_future is not None:
+                    true_future_np = true_future.numpy()
+                    pred_future_np = pred_future.numpy()
+                    # Squeeze sequence dimension if present
+                    if len(pred_future_np.shape) == 3:
+                        pred_future_np = pred_future_np[:, 0, :]
+                    # Ground truth is (batch, 7), but we predict (batch, 6) for phases 1-6
+                    # Slice to match: true_future[:, 1:] for phases 1-6
+                    if true_future_np.shape[-1] == 7:
+                        true_future_np = true_future_np[:, 1:]  # Skip phase 0
+                    video_future_true.append(true_future_np)
+                    video_future_pred.append(pred_future_np)
+
                 video_phases.extend(phases.numpy().flatten())
 
-            all_y_true.extend(video_y_true)
-            all_y_pred.extend(video_y_pred)
+            all_remaining_true.extend(video_remaining_true)
+            all_remaining_pred.extend(video_remaining_pred)
+            all_surgery_true.extend(video_surgery_true)
+            all_surgery_pred.extend(video_surgery_pred)
+            if video_future_true:
+                all_future_true.append(np.vstack(video_future_true))
+                all_future_pred.append(np.vstack(video_future_pred))
             all_phases.extend(video_phases)
-            all_video_ids.extend([video_id] * len(video_y_true))
+            all_video_ids.extend([video_id] * len(video_remaining_true))
 
-            print(f"  Video {video_id:02d}: {len(video_y_true)} frames")
+            print(f"  Video {video_id:02d}: {len(video_remaining_true)} frames")
 
         except Exception as e:
             print(f"  Error evaluating video {video_id}: {e}")
@@ -166,23 +232,55 @@ def evaluate_time_predictor(
             continue
 
     # Convert to arrays
-    y_true = np.array(all_y_true)
-    y_pred = np.array(all_y_pred)
+    y_true_remaining = np.array(all_remaining_true)
+    y_pred_remaining = np.array(all_remaining_pred)
     phases = np.array(all_phases)
 
-    print(f"\nTotal samples: {len(y_true)}")
+    print(f"\nTotal samples: {len(y_true_remaining)}")
 
-    # Compute metrics
-    metrics = compute_time_prediction_metrics(y_true, y_pred, phases)
+    # Compute metrics for remaining_phase
+    metrics = compute_time_prediction_metrics(y_true_remaining, y_pred_remaining, phases)
 
     # Add per-video metrics for statistical testing
     video_maes = []
     for vid in sorted(set(all_video_ids)):
         mask = np.array(all_video_ids) == vid
         if np.sum(mask) > 0:
-            video_mae = np.mean(np.abs(y_true[mask] - y_pred[mask]))
+            video_mae = np.mean(np.abs(y_true_remaining[mask] - y_pred_remaining[mask]))
             video_maes.append(video_mae)
     metrics['per_video_mae'] = video_maes
+
+    # Compute metrics for remaining_surgery
+    if all_surgery_true and all_surgery_pred:
+        y_true_surgery = np.array(all_surgery_true)
+        y_pred_surgery = np.array(all_surgery_pred)
+        metrics['surgery_remaining'] = {
+            'mae_frames': float(np.mean(np.abs(y_true_surgery - y_pred_surgery))),
+            'mae_minutes': float(np.mean(np.abs(y_true_surgery - y_pred_surgery)) / 60),
+            'within_2_min': float(np.mean(np.abs(y_true_surgery - y_pred_surgery) <= 120) * 100),
+            'within_5_min': float(np.mean(np.abs(y_true_surgery - y_pred_surgery) <= 300) * 100),
+            'within_10_min': float(np.mean(np.abs(y_true_surgery - y_pred_surgery) <= 600) * 100),
+        }
+
+    # Compute metrics for future_phase_starts
+    if all_future_true and all_future_pred:
+        future_true = np.vstack(all_future_true)
+        future_pred = np.vstack(all_future_pred)
+
+        # Per-phase metrics (only for valid predictions where true >= 0)
+        phase_names = ['CalotTriangleDissection', 'ClippingCutting', 'GallbladderDissection',
+                       'GallbladderRetraction', 'CleaningCoagulation', 'GallbladderPackaging']
+        future_metrics = {}
+        for i, phase_name in enumerate(phase_names):
+            mask = future_true[:, i] >= 0  # Valid predictions only
+            if np.sum(mask) > 0:
+                mae = np.mean(np.abs(future_true[mask, i] - future_pred[mask, i]))
+                future_metrics[phase_name] = {
+                    'mae_frames': float(mae),
+                    'mae_minutes': float(mae / 60),
+                    'n_samples': int(np.sum(mask))
+                }
+        metrics['future_phase_starts'] = future_metrics
 
     return metrics
 
@@ -247,7 +345,16 @@ def evaluate_tool_detector(
                         phases = batch['phase']
                         elapsed = batch.get('elapsed_phase', tf.zeros_like(phases, dtype=tf.float32))
 
-                        time_pred = time_predictor_model([frames, phases, elapsed], training=False)
+                        # Time predictor expects sequence format with dict inputs
+                        frames_seq = tf.expand_dims(frames, axis=1)  # (batch, 1, H, W, C)
+                        elapsed_seq = tf.expand_dims(tf.expand_dims(elapsed, axis=-1), axis=1)  # (batch, 1, 1)
+                        phases_seq = tf.expand_dims(phases, axis=1)  # (batch, 1)
+
+                        time_pred = time_predictor_model({
+                            'frames': frames_seq,
+                            'elapsed_phase': elapsed_seq,
+                            'phase': phases_seq
+                        }, training=False)
                         if isinstance(time_pred, dict):
                             remaining_time = time_pred['remaining_phase']
                         elif isinstance(time_pred, (list, tuple)):
@@ -452,14 +559,35 @@ def run_task_a_evaluation(config: dict, data_dir: str, checkpoint_path: str) -> 
     )
 
     # Print results
-    print("\n" + "=" * 50)
+    print("\n" + "=" * 60)
     print("TIME PREDICTION METRICS (Task A)")
-    print("=" * 50)
-    print(f"MAE (frames):     {metrics['mae_frames']:.2f}")
-    print(f"MAE (minutes):    {metrics['mae_minutes']:.2f}")
-    print(f"Within 2 min:     {metrics['within_2_min']:.1f}%")
-    print(f"Within 5 min:     {metrics['within_5_min']:.1f}%")
-    print(f"Within 10 min:    {metrics['within_10_min']:.1f}%")
+    print("=" * 60)
+
+    # 1. Time Remaining Until End of Surgery
+    if 'surgery_remaining' in metrics:
+        print("\n--- Time Remaining Until End of Surgery ---")
+        sr = metrics['surgery_remaining']
+        print(f"MAE (frames):     {sr['mae_frames']:.2f}")
+        print(f"MAE (minutes):    {sr['mae_minutes']:.2f}")
+        print(f"Within 2 min:     {sr['within_2_min']:.1f}%")
+        print(f"Within 5 min:     {sr['within_5_min']:.1f}%")
+        print(f"Within 10 min:    {sr['within_10_min']:.1f}%")
+    else:
+        # Fallback to remaining_phase metrics if surgery_remaining not available
+        print("\n--- Time Remaining (Current Phase) ---")
+        print(f"MAE (frames):     {metrics['mae_frames']:.2f}")
+        print(f"MAE (minutes):    {metrics['mae_minutes']:.2f}")
+        print(f"Within 2 min:     {metrics['within_2_min']:.1f}%")
+        print(f"Within 5 min:     {metrics['within_5_min']:.1f}%")
+        print(f"Within 10 min:    {metrics['within_10_min']:.1f}%")
+
+    # 2. Time Until Each Phase Starts
+    if 'future_phase_starts' in metrics and metrics['future_phase_starts']:
+        print("\n--- Time Until Each Phase Starts ---")
+        print(f"{'Phase':<25} {'MAE (min)':>10} {'Samples':>10}")
+        print("-" * 47)
+        for phase_name, phase_metrics in metrics['future_phase_starts'].items():
+            print(f"{phase_name:<25} {phase_metrics['mae_minutes']:>10.2f} {phase_metrics['n_samples']:>10}")
 
     return metrics
 
