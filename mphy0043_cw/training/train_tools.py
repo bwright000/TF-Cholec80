@@ -76,6 +76,8 @@ class MeanAveragePrecision(tf.keras.metrics.Metric):
 
     def result(self):
         aps = [m.result() for m in self.auc_metrics]
+        # Handle NaN values (can occur when a class has no positive samples)
+        aps = [tf.where(tf.math.is_nan(ap), 0.0, ap) for ap in aps]
         return tf.reduce_mean(aps)
 
     def reset_state(self):

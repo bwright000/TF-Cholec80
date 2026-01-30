@@ -202,7 +202,7 @@ def train_time_predictor(config, data_dir):
     # Save every epoch + track best model
     callbacks = [
         BaseModelCheckpoint(base_model, checkpoint_dir, monitor='val_mae'),
-        tf.keras.callbacks.EarlyStopping(monitor='val_mae', patience=5)
+        tf.keras.callbacks.EarlyStopping(monitor='val_mae', patience=5, mode='min')
     ]
 
     model.fit(train_ds, validation_data=val_ds, epochs=20, callbacks=callbacks)

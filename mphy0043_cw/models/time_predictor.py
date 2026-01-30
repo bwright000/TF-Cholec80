@@ -214,6 +214,16 @@ class SSMLayer(Layer):
         self.dropout = Dropout(self.dropout_rate)
 
         super().build(input_shape)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'd_model': self.d_model,
+            'd_state': self.d_state,
+            'dropout_rate': self.dropout_rate
+        })
+        return config
+
     def call(self, x, training=None):
         # Store input dtype for mixed precision compatibility
         # TensorFlow FFT requires float32, so we cast as needed

@@ -145,6 +145,7 @@ def create_callbacks(config, checkpoint_dir):
         tf.keras.callbacks.EarlyStopping(
             monitor='val_mean_average_precision',
             patience=8,
+            mode='max',
             restore_best_weights=True
         )
     ]
