@@ -284,18 +284,20 @@ class SSMLayer(Layer):
         )
 
         # B: Input-to-state matrix (constant, enables valid FFT convolution)
+        # S4D paper: "B = 1 then trained" - uniform input-to-state mapping initially
         self.B = self.add_weight(
             name='B',
             shape=(self.d_state,),
-            initializer='glorot_uniform',
+            initializer='ones',
             trainable=True
         )
 
         # C: State-to-output matrix (constant, enables valid FFT convolution)
+        # S4D paper: "C random with std=1 then trained" - proper gradient scale
         self.C = self.add_weight(
             name='C',
             shape=(self.d_state,),
-            initializer='glorot_uniform',
+            initializer=tf.keras.initializers.RandomNormal(stddev=1.0),
             trainable=True
         )
 
@@ -663,7 +665,7 @@ def create_time_predictor(
     # Head 1: Remaining time in current phase
     remaining_phase = Dense(
         1,
-        activation='relu',  # Time must be non-negative
+        activation='softplus',  # Always positive, non-zero gradient (avoids dead neurons)
         name='remaining_phase'
     )(shared)
 
@@ -783,7 +785,7 @@ def create_time_predictor_single_frame(
     # Head 1: Remaining time in current phase
     remaining_phase = Dense(
         1,
-        activation='relu',  # Time must be non-negative
+        activation='softplus',  # Always positive, non-zero gradient (avoids dead neurons)
         name='remaining_phase'
     )(x)
 
