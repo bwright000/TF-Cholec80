@@ -39,6 +39,11 @@ if gpus:
     except RuntimeError as e:
         print(f"GPU memory growth setting failed: {e}")
 
+# Mixed precision for speed and memory efficiency
+# Reference: https://www.tensorflow.org/guide/mixed_precision
+policy = tf.keras.mixed_precision.Policy('mixed_float16')
+tf.keras.mixed_precision.set_global_policy(policy)
+
 # Use MirroredStrategy for multi-GPU training (after GPU config)
 strategy = tf.distribute.MirroredStrategy()
 print(f"Number of devices: {strategy.num_replicas_in_sync}")
@@ -178,6 +183,8 @@ def train_tool_detector(config, data_dir):
     )
 
     # Prepare batches for tool model
+    # Prefetch after map ensures transformed data is ready for training
+    # Reference: https://www.tensorflow.org/guide/data_performance#prefetching
     train_ds = train_ds.map(prepare_batch_for_tool_model, num_parallel_calls=tf.data.AUTOTUNE)
     val_ds = val_ds.map(prepare_batch_for_tool_model, num_parallel_calls=tf.data.AUTOTUNE)
 

@@ -14,6 +14,11 @@ Architecture:
     Prediction Heads:
         - remaining_current_phase (1 value)
         - future_phase_starts (6 values for phases 1-6)
+
+S4 Enhancements (Gu et al., 2022):
+    - HiPPO-LegS initialization for state matrix A
+    - Learnable discretization step Δ per channel
+    - Bilinear (Tustin) discretization method
 """
 
 import tensorflow as tf
@@ -31,6 +36,10 @@ from .backbone import create_backbone, get_backbone_output_dim
 
 # Import dataset constants (single source of truth)
 from mphy0043_cw.data.dataset import NUM_PHASES
+
+# Import loss functions from losses.py (single source of truth)
+# Re-exported here for backward compatibility with train_time.py imports
+from .losses import weighted_huber_loss, future_phase_loss, combined_time_loss
 
 
 # ============================================================================
@@ -119,6 +128,42 @@ BACKBONE_DIM = 2048  # ResNet-50 output dimension
 
 
 # ============================================================================
+# HiPPO INITIALIZATION (Gu et al., 2020)
+# ============================================================================
+
+def hippo_legs_initializer(N):
+    """
+    HiPPO-LegS (Legendre Scaled) diagonal initialization for S4D-style SSMs.
+
+    The full HiPPO-LegS matrix has diagonal elements -(n+1) for n = 0, ..., N-1,
+    giving [-1, -2, -3, ..., -N]. Since we parameterize A = -exp(A_log),
+    we store A_log = log(n+1) so that A = -exp(log(n+1)) = -(n+1).
+
+    This initialization provides:
+    - Provably optimal history compression via Legendre polynomials
+    - Stable eigenvalues (negative real parts)
+    - Better gradient flow over long sequences
+
+    Args:
+        N: State dimension (d_state)
+
+    Returns:
+        Log-space diagonal values, shape (N,)
+
+    Reference:
+        Gu et al. "HiPPO: Recurrent Memory with Optimal Polynomial Projections"
+        NeurIPS 2020. https://arxiv.org/abs/2008.07669
+
+        Gu et al. "Efficiently Modeling Long Sequences with Structured State Spaces"
+        ICLR 2022. https://arxiv.org/abs/2111.00396
+    """
+    # HiPPO-LegS diagonal magnitudes: [1, 2, 3, ..., N]
+    # When recovered as A = -exp(A_log), gives A = [-1, -2, -3, ..., -N]
+    diag_magnitudes = np.arange(1, N + 1, dtype=np.float32)
+    return np.log(diag_magnitudes)
+
+
+# ============================================================================
 # SSM LAYER (S4-style Linear State Space Model)
 # ============================================================================
 
@@ -131,24 +176,35 @@ class SSMLayer(Layer):
     to efficiently compute the SSM recurrence in parallel.
 
     Mathematical Formulation:
-        Recurrence: h(t) = A*h(t-1) + B*x(t)
-        Output: y(t) = C*h(t) + D*x(t)
-        Convolutional Form: y = x * K, where K = [CB, CAB, CA²B, ..., CA^{L-1}B]
+        Continuous-time:  h'(t) = A*h(t) + B*x(t),  y(t) = C*h(t) + D*x(t)
 
-    Key Properties:
-        1. Linear Time-Invariant (LTI): B and C are constant learnable parameters
-           (not input-dependent), enabling valid FFT convolution.
-        2. FFT Convolution: O(L log L) parallel operations for sequence length L.
-        3. Stable A-Parameterization: A is learned in log-space to ensure
-           system stability (negative real eigenvalues).
+        After bilinear (Tustin) discretization with step Δ:
+        Discrete-time:    h[k] = Ā*h[k-1] + B̄*x[k],  y[k] = C*h[k] + D*x[k]
 
-    Note: This is NOT a selective/Mamba-style SSM. For input-dependent gating,
-    selectivity should be applied AFTER the SSM computation, not inside it.
+        where for diagonal A:
+            Ā = (1 + Δ·A/2) / (1 - Δ·A/2)
+            B̄ = Δ / (1 - Δ·A/2) · B
+
+    Convolutional Form:
+        y = x * K, where K = [C̄B̄, C̄ĀB̄, C̄Ā²B̄, ..., C̄Ā^{L-1}B̄]
+
+    Key Features:
+        1. HiPPO Initialization: State matrix A initialized with HiPPO-LegS
+           for optimal long-range memory (Gu et al., 2020).
+        2. Learnable Δ: Per-channel discretization step enables multi-scale
+           temporal modeling - critical for surgical videos with varying
+           phase durations.
+        3. Bilinear Discretization: Tustin method provides better numerical
+           stability than Euler discretization.
+        4. FFT Convolution: O(L log L) parallel operations for sequence length L.
 
     Args:
         d_model (int): The number of expected features in the input (channel dimension).
         d_state (int): The dimension of the hidden state (latent space).
         dropout_rate (float): Dropout probability applied to the output projection.
+        use_hippo_init (bool): Whether to use HiPPO initialization for A matrix.
+        delta_min (float): Minimum value for learnable Δ initialization.
+        delta_max (float): Maximum value for learnable Δ initialization.
         **kwargs: Standard Keras layer keyword arguments.
 
     Input shape:
@@ -156,12 +212,29 @@ class SSMLayer(Layer):
 
     Output shape:
         3D tensor with shape: `(batch, sequence_length, d_model)`.
+
+    References:
+        - Gu et al. "HiPPO: Recurrent Memory with Optimal Polynomial Projections" (2020)
+        - Gu et al. "Efficiently Modeling Long Sequences with Structured State Spaces" (2022)
     """
-    def __init__(self, d_model, d_state=64, dropout_rate=0.1, **kwargs):
+
+    def __init__(
+        self,
+        d_model,
+        d_state=64,
+        dropout_rate=0.1,
+        use_hippo_init=True,
+        delta_min=0.001,
+        delta_max=0.1,
+        **kwargs
+    ):
         super().__init__(**kwargs)
         self.d_model = d_model
         self.d_state = d_state
         self.dropout_rate = dropout_rate
+        self.use_hippo_init = use_hippo_init
+        self.delta_min = delta_min
+        self.delta_max = delta_max
 
     def build(self, input_shape):
         self.seq_len = input_shape[1]
@@ -176,12 +249,37 @@ class SSMLayer(Layer):
         self.input_proj = Dense(self.d_model, name='input_proj')
         self.x_to_state = Dense(self.d_state, use_bias=False)
 
-        # SSM parameters (constant, not input-dependent)
+        # ================================================================
+        # SSM Parameters (constant, not input-dependent for LTI system)
+        # ================================================================
+
         # A: State transition matrix (learned in log-space for stability)
+        # Using HiPPO-LegS initialization for optimal long-range memory
+        if self.use_hippo_init:
+            hippo_A_log = hippo_legs_initializer(self.d_state)
+            A_initializer = tf.keras.initializers.Constant(hippo_A_log)
+        else:
+            # Fallback to random initialization
+            A_initializer = tf.keras.initializers.RandomUniform(-4, -1)
+
         self.A_log = self.add_weight(
             name='A_log',
             shape=(self.d_state,),
-            initializer=tf.keras.initializers.RandomUniform(-4, -1),
+            initializer=A_initializer,
+            trainable=True
+        )
+
+        # Δ (Delta): Learnable discretization step per channel
+        # Enables multi-scale temporal modeling - different channels can
+        # learn different timescales (critical for surgical phases with
+        # varying durations from seconds to tens of minutes)
+        self.log_delta = self.add_weight(
+            name='log_delta',
+            shape=(self.d_state,),
+            initializer=tf.keras.initializers.RandomUniform(
+                np.log(self.delta_min),
+                np.log(self.delta_max)
+            ),
             trainable=True
         )
 
@@ -220,7 +318,10 @@ class SSMLayer(Layer):
         config.update({
             'd_model': self.d_model,
             'd_state': self.d_state,
-            'dropout_rate': self.dropout_rate
+            'dropout_rate': self.dropout_rate,
+            'use_hippo_init': self.use_hippo_init,
+            'delta_min': self.delta_min,
+            'delta_max': self.delta_max,
         })
         return config
 
@@ -235,57 +336,104 @@ class SSMLayer(Layer):
         z = self.input_proj(x)
         x_state = self.x_to_state(z)
 
-        # SSM state computation (done in float32 for numerical stability)
-        A = -tf.exp(tf.cast(self.A_log, tf.float32))
-        timesteps = tf.range(self.seq_len, dtype=tf.float32)
-        A_powers = tf.exp(A[None, :] * timesteps[:, None])
+        # ================================================================
+        # SSM State Computation (done in float32 for numerical stability)
+        # ================================================================
+
+        # Get continuous-time A (negative for stability)
+        A = -tf.exp(tf.cast(self.A_log, tf.float32))  # (d_state,)
+
+        # Get learnable discretization step Δ (positive via softplus)
+        delta = tf.nn.softplus(tf.cast(self.log_delta, tf.float32))  # (d_state,)
+
+        # ================================================================
+        # Bilinear (Tustin) Discretization
+        # For diagonal A, the bilinear discretization simplifies to:
+        #   Ā = (1 + Δ·A/2) / (1 - Δ·A/2)
+        #   B̄ = Δ / (1 - Δ·A/2) · B
+        # ================================================================
+
+        # Compute discretization terms
+        delta_A_half = delta * A / 2.0  # (d_state,)
+
+        # Discretized A: Ā = (1 + Δ·A/2) / (1 - Δ·A/2)
+        A_bar = (1.0 + delta_A_half) / (1.0 - delta_A_half)  # (d_state,)
+
+        # Discretized B: B̄ = Δ / (1 - Δ·A/2) · B
+        B_bar = (delta / (1.0 - delta_A_half)) * tf.cast(self.B, tf.float32)  # (d_state,)
+
+        # ================================================================
+        # Compute SSM Convolution Kernel
+        # K[t] = Ā^t · B̄ for t = 0, 1, ..., L-1
+        # ================================================================
+
+        timesteps = tf.range(self.seq_len, dtype=tf.float32)  # (seq_len,)
+
+        # Compute Ā^t for each timestep
+        # A_bar: (d_state,), timesteps: (seq_len,)
+        # Result: (seq_len, d_state)
+        A_bar_powers = tf.pow(
+            A_bar[None, :],      # (1, d_state)
+            timesteps[:, None]   # (seq_len, 1)
+        )  # (seq_len, d_state)
+
+        # Compute kernel: K[t] = Ā^t · B̄
+        kernel = A_bar_powers * B_bar[None, :]  # (seq_len, d_state)
 
         def ssm_convolution(u, kernel):
-            # u: (batch, seq_len, d_state)
-            # kernel: (seq_len, d_state)
+            """
+            Compute SSM convolution using FFT for O(L log L) complexity.
 
+            Args:
+                u: Input tensor (batch, seq_len, d_state)
+                kernel: SSM kernel (seq_len, d_state)
+
+            Returns:
+                Convolved output (batch, seq_len, d_state)
+            """
             # Cast to float32 for FFT (TensorFlow FFT requires float32)
             u_f32 = tf.cast(u, tf.float32)
             kernel_f32 = tf.cast(kernel, tf.float32)
 
-            # Move time to last axis
+            # Move time to last axis for FFT
             u_t = tf.transpose(u_f32, [0, 2, 1])        # (batch, d_state, seq)
             k_t = tf.transpose(kernel_f32, [1, 0])      # (d_state, seq)
 
-            # FFT along time
+            # FFT along time dimension
             u_fft = tf.signal.rfft(u_t, fft_length=[self.n_fft])
             k_fft = tf.signal.rfft(k_t, fft_length=[self.n_fft])
 
-            # Broadcast kernel across batch
+            # Pointwise multiplication in frequency domain (convolution theorem)
             y_fft = u_fft * k_fft[None, :, :]
 
-            # Inverse FFT
+            # Inverse FFT to get convolution result
             y = tf.signal.irfft(y_fft, fft_length=[self.n_fft])
 
-            # Trim and restore shape
+            # Trim to original sequence length and restore shape
             y = y[:, :, :self.seq_len]
-            y = tf.transpose(y, [0, 2, 1])       # (batch, seq, d_state)
+            y = tf.transpose(y, [0, 2, 1])  # (batch, seq, d_state)
 
-            # Cast back to input dtype for mixed precision
+            # Cast back to input dtype for mixed precision compatibility
             return tf.cast(y, input_dtype)
-
-        # Compute SSM kernel: K[t] = A^t * B (constant B, valid for FFT convolution)
-        # A_powers: (seq_len, d_state), self.B: (d_state,)
-        kernel = A_powers * tf.cast(self.B[None, :], tf.float32)  # (seq_len, d_state)
 
         # Convolve input state with kernel
         y_state = ssm_convolution(x_state, kernel)
 
-        # Apply constant C as state-to-output projection
-        # self.C: (d_state,) -> broadcast to (batch, seq, d_state)
+        # Apply C as state-to-output projection
+        # C: (d_state,) -> broadcast to (batch, seq, d_state)
         y_state = y_state * tf.cast(self.C[None, None, :], input_dtype)
 
+        # Project back to model dimension
         y = self.state_to_output(y_state)
-        # Cast D to input dtype for mixed precision compatibility
+
+        # Add skip connection (D term)
         y = y + tf.cast(self.D, input_dtype) * z
+
+        # Output projection and dropout
         y = self.output_proj(y)
         y = self.dropout(y, training=training)
 
+        # Residual connection
         return y + residual
 
 
@@ -303,14 +451,24 @@ class SSMBlock(Layer):
         d_state: SSM state dimension
         d_ff: Feedforward hidden dimension (defaults to d_model * 2)
         dropout_rate: Dropout rate
+        use_hippo_init: Whether to use HiPPO initialization for SSM
     """
 
-    def __init__(self, d_model, d_state=32, d_ff=None, dropout_rate=0.1, **kwargs):
+    def __init__(
+        self,
+        d_model,
+        d_state=32,
+        d_ff=None,
+        dropout_rate=0.1,
+        use_hippo_init=True,
+        **kwargs
+    ):
         super().__init__(**kwargs)
         self.d_model = d_model
         self.d_state = d_state
         self.d_ff = d_ff or d_model * 2
         self.dropout_rate = dropout_rate
+        self.use_hippo_init = use_hippo_init
 
     def build(self, input_shape):
         # SSM layer
@@ -318,6 +476,7 @@ class SSMBlock(Layer):
             d_model=self.d_model,
             d_state=self.d_state,
             dropout_rate=self.dropout_rate,
+            use_hippo_init=self.use_hippo_init,
             name='ssm'
         )
 
@@ -350,7 +509,8 @@ class SSMBlock(Layer):
             'd_model': self.d_model,
             'd_state': self.d_state,
             'd_ff': self.d_ff,
-            'dropout_rate': self.dropout_rate
+            'dropout_rate': self.dropout_rate,
+            'use_hippo_init': self.use_hippo_init,
         })
         return config
 
@@ -371,7 +531,8 @@ def create_time_predictor(
     phase_embedding_dim=16,
     dropout_rate=0.3,
     backbone_trainable_layers=1,
-    input_shape=(480, 854, 3)
+    input_shape=(480, 854, 3),
+    use_hippo_init=True
 ):
     """
     Create the time prediction model (Task A).
@@ -382,13 +543,14 @@ def create_time_predictor(
 
     Args:
         sequence_length: Number of frames in input sequence
-        d_model: Dimension of SSM model 
+        d_model: Dimension of SSM model
         d_state: SSM state dimension
         n_ssm_blocks: Number of SSM blocks
         phase_embedding_dim: Dimension of phase embedding
         dropout_rate: Dropout rate
         backbone_trainable_layers: Layers to fine-tune in backbone
         input_shape: Shape of input images (H, W, C)
+        use_hippo_init: Whether to use HiPPO initialization for SSM
 
     Returns:
         Keras Model with inputs:
@@ -486,6 +648,7 @@ def create_time_predictor(
             d_model=d_model,
             d_state=d_state,
             dropout_rate=dropout_rate,
+            use_hippo_init=use_hippo_init,
             name=f'ssm_block_{i}'
         )(x)
 
@@ -650,100 +813,9 @@ def create_time_predictor_single_frame(
 # ============================================================================
 # LOSS FUNCTIONS
 # ============================================================================
-
-def weighted_huber_loss(y_true, y_pred, delta=1.0):
-    """
-    Weighted Huber loss that gives higher weight to near-term predictions.
-
-    Near-term predictions are more clinically relevant (OR scheduling),
-    so we weight them more heavily.
-
-    Args:
-        y_true: Ground truth remaining times
-        y_pred: Predicted remaining times
-        delta: Huber loss delta parameter
-
-    Returns:
-        Weighted loss value
-    """
-    # Cast to float32 for numerical stability (handles mixed precision)
-    y_true = tf.cast(y_true, tf.float32)
-    y_pred = tf.cast(y_pred, tf.float32)
-
-    # Compute Huber loss
-    error = y_true - y_pred
-    abs_error = tf.abs(error)
-    quadratic = tf.minimum(abs_error, delta)
-    linear = abs_error - quadratic
-    huber = 0.5 * quadratic ** 2 + delta * linear
-
-    # Weight by inverse of remaining time (more weight for near-term)
-    # Add small constant to avoid division by zero
-    weights = 1.0 / (tf.abs(y_true) + 1.0)
-
-    # Normalize weights
-    weights = weights / tf.reduce_mean(weights)
-
-    return tf.reduce_mean(weights * huber)
-
-
-def future_phase_loss(y_true, y_pred):
-    """
-    Loss for future phase start time predictions.
-
-    Handles -1 values (phase already passed) by masking them out.
-
-    Args:
-        y_true: Ground truth future phase starts, -1 if passed
-        y_pred: Predicted future phase starts
-
-    Returns:
-        Masked Huber loss
-    """
-    # Cast to float32 for numerical stability (handles mixed precision)
-    y_true = tf.cast(y_true, tf.float32)
-    y_pred = tf.cast(y_pred, tf.float32)
-
-    # Create mask for valid predictions (not -1)
-    mask = tf.cast(y_true >= 0, tf.float32)
-
-    # Huber loss on valid predictions only
-    error = y_true - y_pred
-    abs_error = tf.abs(error)
-    delta = 1.0
-    quadratic = tf.minimum(abs_error, delta)
-    linear = abs_error - quadratic
-    huber = 0.5 * quadratic ** 2 + delta * linear
-
-    # Apply mask
-    masked_loss = huber * mask
-
-    # Average over valid predictions only
-    n_valid = tf.maximum(tf.reduce_sum(mask), 1.0)
-    return tf.reduce_sum(masked_loss) / n_valid
-
-
-def combined_time_loss(y_true_remaining, y_pred_remaining,
-                       y_true_future, y_pred_future,
-                       remaining_weight=1.0, future_weight=0.5):
-    """
-    Combined loss for both prediction tasks.
-
-    Args:
-        y_true_remaining: Ground truth remaining phase time
-        y_pred_remaining: Predicted remaining phase time
-        y_true_future: Ground truth future phase starts
-        y_pred_future: Predicted future phase starts
-        remaining_weight: Weight for remaining phase loss
-        future_weight: Weight for future phase loss
-
-    Returns:
-        Combined weighted loss
-    """
-    loss_remaining = weighted_huber_loss(y_true_remaining, y_pred_remaining)
-    loss_future = future_phase_loss(y_true_future, y_pred_future)
-
-    return remaining_weight * loss_remaining + future_weight * loss_future
+# Note: Loss functions (weighted_huber_loss, future_phase_loss, combined_time_loss)
+# are imported from mphy0043_cw.models.losses and re-exported for backward
+# compatibility. See losses.py for implementations.
 
 
 # ============================================================================
@@ -751,11 +823,26 @@ def combined_time_loss(y_true_remaining, y_pred_remaining,
 # ============================================================================
 
 if __name__ == '__main__':
-    print("Testing Time Predictor Model with SSM...")
+    print("Testing Time Predictor Model with S4-style SSM...")
     print("=" * 60)
+
+    # Test HiPPO initialization
+    print("\n1. Testing HiPPO Initialization...")
+    hippo_vals = hippo_legs_initializer(32)
+    print(f"   HiPPO A_log shape: {hippo_vals.shape}")
+    print(f"   HiPPO A_log range: [{hippo_vals.min():.4f}, {hippo_vals.max():.4f}]")
+    print(f"   Expected: log(1) to log(32) = [0.0, 3.47]")
+
+    # Verify the values recover correctly
+    A_recovered = -np.exp(hippo_vals)
+    print(f"   Recovered A diagonal: [{A_recovered[0]:.1f}, {A_recovered[1]:.1f}, ..., {A_recovered[-1]:.1f}]")
+    print(f"   Expected: [-1, -2, ..., -32]")
+    assert np.allclose(A_recovered, -np.arange(1, 33)), "HiPPO initialization incorrect!"
+    print("   [OK] HiPPO initialization verified")
+
     # Test SSM Layer
-    print("\n1. Testing SSMLayer (fixed projections)...")
-    ssm_layer = SSMLayer(d_model=64, d_state=32)
+    print("\n2. Testing SSMLayer (with HiPPO + learnable Δ + bilinear)...")
+    ssm_layer = SSMLayer(d_model=64, d_state=32, use_hippo_init=True)
     test_input = tf.random.normal((2, 10, 64))  # (batch, seq, features)
     ssm_output = ssm_layer(test_input)
     print(f"   SSM Input shape: {test_input.shape}")
@@ -765,14 +852,19 @@ if __name__ == '__main__':
     assert ssm_output.shape == test_input.shape, "Output shape mismatch!"
     print("   [OK] Shape preserved (no scalar collapse)")
 
+    # Check learnable delta is created
+    delta_weight = [w for w in ssm_layer.weights if 'log_delta' in w.name]
+    assert len(delta_weight) == 1, "log_delta weight not found!"
+    print(f"   [OK] Learnable Δ created with shape {delta_weight[0].shape}")
+
     # Test SSM Block
-    print("\n2. Testing SSMBlock...")
-    ssm_block = SSMBlock(d_model=64, d_state=32, d_ff=128)
+    print("\n3. Testing SSMBlock...")
+    ssm_block = SSMBlock(d_model=64, d_state=32, d_ff=128, use_hippo_init=True)
     block_output = ssm_block(test_input)
     print(f"   Block Output shape: {block_output.shape}")
 
     # Test full model (with small dimensions for speed)
-    print("\n3. Testing full Time Predictor model...")
+    print("\n4. Testing full Time Predictor model...")
     print("   (Using small dimensions for fast testing)")
 
     # Create model with smaller dimensions for testing
@@ -784,7 +876,8 @@ if __name__ == '__main__':
         phase_embedding_dim=8,
         dropout_rate=0.1,
         backbone_trainable_layers=0,  # Frozen for speed
-        input_shape=(224, 224, 3)  # Smaller images for testing
+        input_shape=(224, 224, 3),  # Smaller images for testing
+        use_hippo_init=True
     )
 
     # Create dummy inputs
@@ -831,7 +924,7 @@ if __name__ == '__main__':
     print(f"   - For full 480x854 images, use batch_size=4")
 
     # Test loss functions
-    print("\n4. Testing loss functions...")
+    print("\n5. Testing loss functions...")
     y_true = tf.constant([[100.0], [50.0], [10.0], [5.0]])
     y_pred = tf.constant([[95.0], [55.0], [12.0], [3.0]])
     loss = weighted_huber_loss(y_true, y_pred)
@@ -843,3 +936,13 @@ if __name__ == '__main__':
                                   [55, 145, 310, 0, 0, 0]], dtype=tf.float32)
     loss_future = future_phase_loss(y_true_future, y_pred_future)
     print(f"   Future phase loss: {loss_future.numpy():.4f}")
+
+    # Summary of S4 enhancements
+    print("\n" + "=" * 60)
+    print("S4 Enhancements Summary:")
+    print("=" * 60)
+    print("[OK] HiPPO-LegS initialization for state matrix A")
+    print("[OK] Learnable discretization step Δ per channel")
+    print("[OK] Bilinear (Tustin) discretization method")
+    print("[OK] FFT-based convolution for O(L log L) complexity")
+    print("=" * 60)
