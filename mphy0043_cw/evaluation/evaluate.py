@@ -40,6 +40,43 @@ from mphy0043_cw.data.dataset import (
     TEST_VIDEO_IDS, VAL_VIDEO_IDS,
     NUM_PHASES, NUM_TOOLS
 )
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def _build_sequence_inputs(frames, elapsed, phases):
+    """Build sequence-format inputs for time predictor (single-frame evaluation)."""
+    frames_seq = tf.expand_dims(frames, axis=1)
+    elapsed_seq = tf.expand_dims(tf.expand_dims(elapsed, axis=-1), axis=1)
+    phases_seq = tf.expand_dims(phases, axis=1)
+    return {
+        'frames': frames_seq,
+        'elapsed_phase': elapsed_seq,
+        'phase': phases_seq
+    }
+
+
+def _extract_predictions(predictions):
+    """Extract remaining_phase and future_phase_starts from model output."""
+    if isinstance(predictions, dict):
+        remaining = predictions['remaining_phase']
+        future = predictions.get('future_phase_starts', None)
+    elif isinstance(predictions, (list, tuple)):
+        remaining = predictions[0]
+        future = predictions[1] if len(predictions) > 1 else None
+    else:
+        remaining = predictions
+        future = None
+    return remaining, future
+
+
+def _make_serializable(obj):
+    """Recursively remove numpy arrays from nested dicts for JSON serialization."""
+    if isinstance(obj, np.ndarray):
+        return None
+    if isinstance(obj, dict):
+        return {k: v for k, v in ((k, _make_serializable(v)) for k, v in obj.items()) if v is not None}
+    return obj
 
 
 # ============================================================================
@@ -137,79 +174,60 @@ def evaluate_time_predictor(
             video_phases = []
 
             for batch in ds:
-                # Get inputs
                 frames = batch['frame']
                 phases = batch['phase']
                 elapsed = batch.get('elapsed_phase', tf.zeros_like(phases, dtype=tf.float32))
 
-                # For time predictor, we need sequence format
-                # Add sequence dimension for single-frame evaluation
-                frames_seq = tf.expand_dims(frames, axis=1)  # (batch, 1, H, W, C)
-                elapsed_seq = tf.expand_dims(tf.expand_dims(elapsed, axis=-1), axis=1)  # (batch, 1, 1)
-                phases_seq = tf.expand_dims(phases, axis=1)  # (batch, 1)
-
-                # Make prediction
-                inputs = {
-                    'frames': frames_seq,
-                    'elapsed_phase': elapsed_seq,
-                    'phase': phases_seq
-                }
+                inputs = _build_sequence_inputs(frames, elapsed, phases)
                 predictions = model(inputs, training=False)
+                pred_remaining_raw, pred_future_raw = _extract_predictions(predictions)
 
-                # Extract predictions
-                if isinstance(predictions, dict):
-                    pred_remaining = predictions['remaining_phase']
-                    pred_future = predictions.get('future_phase_starts', None)
-                elif isinstance(predictions, (list, tuple)):
-                    pred_remaining = predictions[0]
-                    pred_future = predictions[1] if len(predictions) > 1 else None
+                # Model outputs raw frame counts (no denormalization needed)
+                pred_remaining = pred_remaining_raw.numpy().flatten()
+                if pred_future_raw is not None:
+                    pred_future = pred_future_raw.numpy()
+                    # Squeeze sequence dimension if present: (batch, 1, 6) -> (batch, 6)
+                    if len(pred_future.shape) == 3:
+                        pred_future = pred_future[:, 0, :]
                 else:
-                    pred_remaining = predictions
                     pred_future = None
 
-                # Get ground truth - remaining phase
+                # Get ground truth - remaining phase (raw frames)
                 true_remaining = batch.get('remaining_phase', None)
                 if true_remaining is None:
                     print(f"  Warning: batch missing 'remaining_phase' key, skipping...")
                     continue
                 video_remaining_true.extend(true_remaining.numpy().flatten())
-                video_remaining_pred.extend(pred_remaining.numpy().flatten())
+                video_remaining_pred.extend(pred_remaining)
 
-                # Get ground truth - remaining surgery
+                # Get ground truth - remaining surgery (raw frames)
                 true_surgery = batch.get('remaining_surgery', None)
                 if true_surgery is not None:
                     video_surgery_true.extend(true_surgery.numpy().flatten())
                     # Estimate surgery remaining from future_phase_starts
                     # (max future start + estimated final phase duration)
                     if pred_future is not None:
-                        # Take the max predicted future start as approx surgery remaining
-                        pred_future_np = pred_future.numpy()
-                        # Shape: (batch, 1, 6) -> squeeze to (batch, 6)
-                        if len(pred_future_np.shape) == 3:
-                            pred_future_np = pred_future_np[:, 0, :]
+                        # pred_future is raw frame counts (batch, 6)
                         # Max across phases (ignoring negatives)
-                        pred_surgery = np.max(np.maximum(pred_future_np, 0), axis=-1)
+                        pred_surgery = np.max(np.maximum(pred_future, 0), axis=-1)
                         # Add remaining_phase to get total
-                        pred_surgery = pred_surgery + pred_remaining.numpy().flatten()
+                        pred_surgery = pred_surgery + pred_remaining
                         video_surgery_pred.extend(pred_surgery)
                     else:
                         # Fallback: use remaining_phase as lower bound
-                        video_surgery_pred.extend(pred_remaining.numpy().flatten())
+                        video_surgery_pred.extend(pred_remaining)
 
-                # Get ground truth - future phase starts
+                # Get ground truth - future phase starts (raw frames)
                 true_future = batch.get('future_phase_starts', None)
                 if true_future is not None and pred_future is not None:
                     true_future_np = true_future.numpy()
-                    pred_future_np = pred_future.numpy()
-                    # Squeeze sequence dimension if present
-                    if len(pred_future_np.shape) == 3:
-                        pred_future_np = pred_future_np[:, 0, :]
+                    # pred_future is raw frame counts (batch, 6)
                     # Ground truth is (batch, 7), but we predict (batch, 6) for phases 1-6
                     # Slice to match: true_future[:, 1:] for phases 1-6
                     if true_future_np.shape[-1] == 7:
                         true_future_np = true_future_np[:, 1:]  # Skip phase 0
                     video_future_true.append(true_future_np)
-                    video_future_pred.append(pred_future_np)
+                    video_future_pred.append(pred_future)
 
                 video_phases.extend(phases.numpy().flatten())
 
@@ -242,10 +260,11 @@ def evaluate_time_predictor(
     metrics = compute_time_prediction_metrics(y_true_remaining, y_pred_remaining, phases)
 
     # Add per-video metrics for statistical testing
+    video_ids_array = np.array(all_video_ids)
     video_maes = []
     for vid in sorted(set(all_video_ids)):
-        mask = np.array(all_video_ids) == vid
-        if np.sum(mask) > 0:
+        mask = video_ids_array == vid
+        if np.any(mask):
             video_mae = np.mean(np.abs(y_true_remaining[mask] - y_pred_remaining[mask]))
             video_maes.append(video_mae)
     metrics['per_video_mae'] = video_maes
@@ -345,22 +364,9 @@ def evaluate_tool_detector(
                         phases = batch['phase']
                         elapsed = batch.get('elapsed_phase', tf.zeros_like(phases, dtype=tf.float32))
 
-                        # Time predictor expects sequence format with dict inputs
-                        frames_seq = tf.expand_dims(frames, axis=1)  # (batch, 1, H, W, C)
-                        elapsed_seq = tf.expand_dims(tf.expand_dims(elapsed, axis=-1), axis=1)  # (batch, 1, 1)
-                        phases_seq = tf.expand_dims(phases, axis=1)  # (batch, 1)
-
-                        time_pred = time_predictor_model({
-                            'frames': frames_seq,
-                            'elapsed_phase': elapsed_seq,
-                            'phase': phases_seq
-                        }, training=False)
-                        if isinstance(time_pred, dict):
-                            remaining_time = time_pred['remaining_phase']
-                        elif isinstance(time_pred, (list, tuple)):
-                            remaining_time = time_pred[0]
-                        else:
-                            remaining_time = time_pred
+                        inputs = _build_sequence_inputs(frames, elapsed, phases)
+                        time_pred = time_predictor_model(inputs, training=False)
+                        remaining_time, _ = _extract_predictions(time_pred)
 
                         # Compute phase progress from predicted remaining time
                         # (This is an approximation - actual depends on total phase duration)
@@ -411,10 +417,11 @@ def evaluate_tool_detector(
     metrics = compute_tool_detection_metrics(y_true, y_pred)
 
     # Add per-video mAP for statistical testing
+    video_ids_array = np.array(all_video_ids)
     video_maps = []
     for vid in sorted(set(all_video_ids)):
-        mask = np.array(all_video_ids) == vid
-        if np.sum(mask) > 0:
+        mask = video_ids_array == vid
+        if np.any(mask):
             vid_metrics = compute_tool_detection_metrics(y_true[mask], y_pred[mask])
             video_maps.append(vid_metrics['mAP'])
     metrics['per_video_mAP'] = video_maps
@@ -769,23 +776,7 @@ def main():
 
     # Save results
     if args.output:
-        # Remove non-serializable items
-        serializable_results = {}
-        for task_key, task_results in all_results.items():
-            serializable_results[task_key] = {}
-            for key, value in task_results.items():
-                if isinstance(value, np.ndarray):
-                    continue  # Skip raw arrays
-                elif isinstance(value, dict):
-                    # Recursively clean
-                    clean_dict = {}
-                    for k, v in value.items():
-                        if not isinstance(v, np.ndarray):
-                            clean_dict[k] = v
-                    serializable_results[task_key][key] = clean_dict
-                else:
-                    serializable_results[task_key][key] = value
-
+        serializable_results = _make_serializable(all_results)
         with open(args.output, 'w') as f:
             json.dump(serializable_results, f, indent=2)
         print(f"\nResults saved to {args.output}")

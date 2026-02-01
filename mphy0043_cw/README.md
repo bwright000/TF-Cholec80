@@ -16,19 +16,26 @@ git clone https://github.com/bwright000/TF-Cholec80.git
 cd TF-Cholec80
 ```
 
-### 2. Create Conda Environment
+### 2. Create Environment
 
-**For Windows/Linux:**
+**Option A: Conda (recommended for local machines)**
 
 ```bash
-conda env create -f mphy0043_cw/environment.yaml
+conda env create -f mphy0043_cw/environment-conda.yaml
 conda activate mphy0043
+```
+
+**Option B: Mamba/Micromamba (recommended for clusters)**
+
+```bash
+mamba env create -f mphy0043_cw/environment-mamba.yaml
+mamba activate tf-cholec80
 ```
 
 **For Apple Silicon:**
 
 ```bash
-conda env create -f mphy0043_cw/environment.yaml
+conda env create -f mphy0043_cw/environment-conda.yaml
 conda activate mphy0043
 
 # Replace TensorFlow with Apple Silicon version
@@ -60,16 +67,19 @@ This generates:
 ```
 mphy0043_cw/
 ├── config.yaml              # Hyperparameters and paths
-├── environment.yaml         # Conda environment specification
+├── environment-conda.yaml   # Conda environment (local machines)
+├── environment-mamba.yaml   # Mamba environment (clusters)
 ├── README.md                # This file
 │
 ├── data/
+│   ├── dataset.py           # Low-level data loading and annotations
+│   ├── dataloader.py        # TF dataset builders with timing labels
 │   ├── preprocessing.py     # Extract timing labels from videos
-│   ├── dataloader.py        # TF-Cholec80 with timing labels
 │   └── augmentation.py      # Data augmentation functions
 │
 ├── models/
 │   ├── backbone.py          # ResNet-50 feature extractor
+│   ├── losses.py            # Loss functions (Huber, focal, etc.)
 │   ├── time_predictor.py    # Task A: SSM-based time prediction
 │   ├── tool_detector.py     # Task B: Baseline (visual only)
 │   └── timed_tool_detector.py  # Task B: With timing info
@@ -80,9 +90,18 @@ mphy0043_cw/
 │   └── train_timed_tools.py # Train Task B with timing
 │
 ├── evaluation/
+│   ├── evaluate.py          # Full evaluation pipeline
 │   └── metrics.py           # MAE, mAP, and comparison metrics
 │
+├── visualization/
+│   └── generate_figures.py  # Generate result plots
+│
+├── scripts/
+│   ├── run_all.py           # End-to-end pipeline
+│   └── run_tests.py         # Model testing utilities
+│
 └── results/                 # Output directory
+    ├── checkpoints/         # Model weights
     ├── timing_labels.npz
     └── phase_statistics.json
 ```
@@ -135,6 +154,19 @@ python -m mphy0043_cw.training.train_tools --config mphy0043_cw/config.yaml --da
 python -m mphy0043_cw.training.train_timed_tools --config mphy0043_cw/config.yaml --data_dir /path/to/cholec80
 ```
 
+### Evaluation
+
+```bash
+# Evaluate Task A (time prediction)
+python -m mphy0043_cw.evaluation.evaluate --config mphy0043_cw/config.yaml --data_dir /path/to/cholec80 --task A
+
+# Evaluate Task B (tool detection)
+python -m mphy0043_cw.evaluation.evaluate --config mphy0043_cw/config.yaml --data_dir /path/to/cholec80 --task B
+
+# Evaluate all tasks
+python -m mphy0043_cw.evaluation.evaluate --config mphy0043_cw/config.yaml --data_dir /path/to/cholec80 --task all
+```
+
 ## Model Architecture
 
 ### Task A: Time Predictor (SSM-based)
@@ -152,50 +184,49 @@ Concat: [visual_feat, elapsed_time, phase_embedding]
 ```
 
 The SSM (State Space Model) layer implements S4-style Linear State Space modeling with:
-- Constant B and C matrices (enables FFT convolution)
-- Stable state dynamics via negative A parameterization in log-space
-- O(L log L) parallel FFT-based convolution for sequence length L
+- HiPPO-LegS initialization for optimal long-range memory
+- Learnable per-channel discretization step Δ
+- Bilinear (Tustin) discretization for stability
+- O(L log L) parallel FFT-based convolution
 
 ### Task B: Tool Detector
 
 **Baseline (Visual Only):**
 ```
-RGB Frame → ResNet-50 → Dense(512) → Dense(7, sigmoid)
+RGB Frame → ResNet-50 → Dense(1024) → Dense(7, sigmoid)
 ```
 
 **Timed (With Timing):**
 ```
-Visual: Frame → ResNet-50 → 512-d
-Timing: [remaining_time, phase_progress, phase_onehot] → 64-d
+Visual: Frame → ResNet-50 → 1024-d
+Timing: [remaining_time, phase_progress, phase_onehot] → 128-d
                     ↓
               Concatenate
                     ↓
-         Dense(512) → Dense(7, sigmoid)
+         Dense(1024) → Dense(7, sigmoid)
 ```
 
 ## Data Splits
 
-Following standard Cholec80 protocol:
-
 | Split | Video IDs | Count |
 |-------|-----------|-------|
-| Train | 0-31 | 32 |
-| Val | 32-39 | 8 |
-| Test | 40-79 | 40 |
+| Train | 1-50 | 50 |
+| Val | 51-60 | 10 |
+| Test | 61-80 | 20 |
 
 ## Evaluation Metrics
 
 ### Task A (Time Prediction)
 - MAE (frames/minutes)
-- Weighted MAE (prioritizes near-term accuracy)
 - Within-X-minute accuracy (2, 5, 10 min thresholds)
 - Per-phase MAE
-- Horizon analysis (accuracy vs prediction distance)
+- Per-video MAE for statistical testing
 
 ### Task B (Tool Detection)
 - Mean Average Precision (mAP)
 - Per-tool AP
 - Precision, Recall, F1 at threshold 0.5
+- Statistical comparison (paired t-test)
 
 ## Troubleshooting
 

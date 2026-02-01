@@ -32,33 +32,33 @@ data:
 # MODEL SETTINGS
 # =============================================================================
 model:
-  # Backbone: Unfrozen
+  # Backbone: Frozen
   backbone: "resnet50"
   backbone_weights: "imagenet"
-  backbone_trainable_layers: 1 
+  backbone_trainable_layers: 0 
   backbone_output_dim: 2048
 
   # Task A: Time Predictor (Parallelized SSM)
   time_predictor:
-    d_model: 512          # 
-    d_state: 128          # 
+    d_model: 512          #
+    d_state: 64          #
     n_ssm_blocks: 4       # Model Depth
-    phase_embedding_dim: 32
-    sequence_length: 64   # ~1 min temporal context at 1fps 
-    sequence_stride: 16   
+    phase_embedding_dim: 16  # Must match trained checkpoint
+    sequence_length: 256   # ~4 min temporal context at 1fps 
+    sequence_stride: 128   
     use_parallel_scan: True # Flag Parallel on Clusters
 
   # Task B: Tool Detector
   tool_detector:
     hidden_dim: 1024      #
-    backbone_trainable_layers: 1  # FROZEN (matches global setting)
+    backbone_trainable_layers: 0  # FROZEN (matches global setting)
 
   # Task B: Timed Tool Detector
   timed_tool_detector:
     visual_hidden_dim: 1024
     timing_hidden_dim: 128
     combined_hidden_dim: 1024
-    backbone_trainable_layers: 1  # FROZEN (matches global setting)
+    backbone_trainable_layers: 0  # FROZEN (matches global setting)
     max_remaining_phase: 5000.0
     max_remaining_surgery: 30000.0
 
@@ -68,21 +68,31 @@ model:
 training:
   # Cluster-level Batching
   batch_size: 64          # For single-frame tasks (tool detection)
-  sequence_batch_size: 8  # For sequence tasks (time prediction) - keep low due to memory 
-  
+  sequence_batch_size: 1  # For sequence tasks - 1×64=64 frames (avoids int32 overflow at 480x854)
+
   mixed_precision: True
-  
-  learning_rate: 0.0001
+
+  # Learning rate: reduced for stability with raw frame targets
+  learning_rate: 0.0005
   dropout_rate: 0.3
   gradient_clip_norm: 1.0
 
-  epochs: 20             
+  epochs: 15
   early_stopping_patience: 5
 
-  # Loss weights (Task A)
-  remaining_weight: 0.57   # Adjusted for multi-task balance
-  future_weight: 0.43      # Increased importance of future phase starts
+  # Learning rate warmup (Task A)
+  # warmup_steps: number of steps for linear warmup (default: 1 epoch)
+  warmup_steps: 6000
+  steps_per_epoch: 6000   # Approximate for logging
 
+  # Loss settings (Task A)
+  # Targets are RAW FRAME COUNTS (no normalization)
+  # Huber delta=100 frames (~1.7 min): errors < 100 are quadratic, > 100 are linear
+  huber_delta: 100
+  remaining_weight: 0.6   # Weight for remaining phase time loss
+  future_weight: 0.4      # Weight for future phase starts loss
+
+  # Task B settings
   focal_gamma: 2.0
   focal_alpha: 0.25
 

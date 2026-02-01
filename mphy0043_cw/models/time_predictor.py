@@ -15,7 +15,7 @@ Architecture:
         - remaining_current_phase (1 value)
         - future_phase_starts (6 values for phases 1-6)
 
-S4 Enhancements (Gu et al., 2022):
+S4 Enhancements:
     - HiPPO-LegS initialization for state matrix A
     - Learnable discretization step Δ per channel
     - Bilinear (Tustin) discretization method
@@ -27,7 +27,7 @@ from keras import Model, ops
 from keras.layers import (
     Layer, Input, Dense, Dropout, Concatenate,
     Embedding, BatchNormalization, LayerNormalization,
-    Conv1D, Activation, Lambda
+    Activation
 )
 import numpy as np
 
@@ -39,24 +39,20 @@ from mphy0043_cw.data.dataset import NUM_PHASES
 
 # Import loss functions from losses.py (single source of truth)
 # Re-exported here for backward compatibility with train_time.py imports
-from .losses import weighted_huber_loss, future_phase_loss, combined_time_loss
+from .losses import (
+    weighted_huber_loss, future_phase_loss, combined_time_loss,
+    huber_loss, normalize_targets, denormalize_predictions,
+    MAX_REMAINING_PHASE, MAX_REMAINING_SURGERY, MAX_FUTURE_PHASE_START
+)
 
 
 # ============================================================================
-# FRAME PREPROCESSING LAYER
+# FRAME PREPROCESSING LAYERS
+# Note: Keras 3 requires TF ops to be wrapped in custom layers.
 # ============================================================================
 
 class FramePreprocessingLayer(Layer):
-    """
-    Custom layer for preprocessing video frames for the backbone.
-
-    This handles:
-    1. Casting uint8 frames to float32
-    2. Flattening sequence dimension for batch processing
-    3. Applying ResNet preprocessing
-
-    Keras 3 requires TF ops to be wrapped in layers.
-    """
+    """Preprocess video frames: cast to float32, flatten sequence, apply ResNet preprocessing."""
 
     def __init__(self, sequence_length, input_shape_hw, **kwargs):
         super().__init__(**kwargs)
@@ -91,11 +87,7 @@ class FramePreprocessingLayer(Layer):
 
 
 class ReshapeBackToSequence(Layer):
-    """
-    Reshape backbone features back to sequence format.
-
-    Keras 3 requires TF ops to be wrapped in layers.
-    """
+    """Reshape backbone features back to sequence format."""
 
     def __init__(self, sequence_length, feature_dim, **kwargs):
         super().__init__(**kwargs)
@@ -119,6 +111,35 @@ class ReshapeBackToSequence(Layer):
         return config
 
 
+class BackboneWrapper(Layer):
+    """
+    Wrapper layer for backbone that handles training mode correctly.
+
+    When the backbone is frozen (trainable_layers=0), this wrapper ensures
+    the backbone is called with training=False to avoid BatchNormalization
+    momentum updates, which significantly slows down training.
+    """
+
+    def __init__(self, backbone, trainable_layers, **kwargs):
+        super().__init__(**kwargs)
+        self.backbone = backbone
+        self.trainable_layers = trainable_layers
+
+    def call(self, x, training=None):
+        # Use inference mode if backbone is completely frozen
+        # This prevents BN layers from updating running statistics
+        if self.trainable_layers == 0:
+            return self.backbone(x, training=False)
+        return self.backbone(x, training=training)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            'trainable_layers': self.trainable_layers
+        })
+        return config
+
+
 # ============================================================================
 # CONSTANTS
 # ============================================================================
@@ -128,7 +149,7 @@ BACKBONE_DIM = 2048  # ResNet-50 output dimension
 
 
 # ============================================================================
-# HiPPO INITIALIZATION (Gu et al., 2020)
+# HiPPO INITIALIZATION
 # ============================================================================
 
 def hippo_legs_initializer(N):
@@ -149,13 +170,6 @@ def hippo_legs_initializer(N):
 
     Returns:
         Log-space diagonal values, shape (N,)
-
-    Reference:
-        Gu et al. "HiPPO: Recurrent Memory with Optimal Polynomial Projections"
-        NeurIPS 2020. https://arxiv.org/abs/2008.07669
-
-        Gu et al. "Efficiently Modeling Long Sequences with Structured State Spaces"
-        ICLR 2022. https://arxiv.org/abs/2111.00396
     """
     # HiPPO-LegS diagonal magnitudes: [1, 2, 3, ..., N]
     # When recovered as A = -exp(A_log), gives A = [-1, -2, -3, ..., -N]
@@ -190,7 +204,7 @@ class SSMLayer(Layer):
 
     Key Features:
         1. HiPPO Initialization: State matrix A initialized with HiPPO-LegS
-           for optimal long-range memory (Gu et al., 2020).
+           for optimal long-range memory.
         2. Learnable Δ: Per-channel discretization step enables multi-scale
            temporal modeling - critical for surgical videos with varying
            phase durations.
@@ -212,10 +226,6 @@ class SSMLayer(Layer):
 
     Output shape:
         3D tensor with shape: `(batch, sequence_length, d_model)`.
-
-    References:
-        - Gu et al. "HiPPO: Recurrent Memory with Optimal Polynomial Projections" (2020)
-        - Gu et al. "Efficiently Modeling Long Sequences with Structured State Spaces" (2022)
     """
 
     def __init__(
@@ -225,7 +235,7 @@ class SSMLayer(Layer):
         dropout_rate=0.1,
         use_hippo_init=True,
         delta_min=0.001,
-        delta_max=0.1,
+        delta_max=None,  # Auto-computed for stability if None
         **kwargs
     ):
         super().__init__(**kwargs)
@@ -234,7 +244,20 @@ class SSMLayer(Layer):
         self.dropout_rate = dropout_rate
         self.use_hippo_init = use_hippo_init
         self.delta_min = delta_min
-        self.delta_max = delta_max
+
+        # Stability constraint for bilinear discretization with HiPPO:
+        # Bilinear transform requires |Δ·A/2| < 1 for stability.
+        # With HiPPO, max|A| = d_state, so delta_max < 2/d_state.
+        # We use 0.8 * (2/d_state) for safety margin.
+        if delta_max is None:
+            if use_hippo_init:
+                # Constrained for HiPPO stability
+                self.delta_max = 0.8 * (2.0 / d_state)
+            else:
+                # More relaxed for random init (smaller |A| values)
+                self.delta_max = 0.1
+        else:
+            self.delta_max = delta_max
 
     def build(self, input_shape):
         self.seq_len = input_shape[1]
@@ -339,7 +362,7 @@ class SSMLayer(Layer):
         x_state = self.x_to_state(z)
 
         # ================================================================
-        # SSM State Computation (done in float32 for numerical stability)
+        # SSM State Computation (Casted to float32 for TensorFlow FFT
         # ================================================================
 
         # Get continuous-time A (negative for stability)
@@ -602,8 +625,16 @@ def create_time_predictor(
     )
     frames_preprocessed, batch_size = preprocess_layer(frames_input)
 
+    # Wrap backbone to handle training mode correctly when frozen
+    # This prevents BN momentum updates when backbone_trainable_layers=0
+    backbone_wrapper = BackboneWrapper(
+        backbone=backbone,
+        trainable_layers=backbone_trainable_layers,
+        name='backbone_wrapper'
+    )
+
     # Extract features
-    features_flat = backbone(frames_preprocessed)  # (batch*seq, 2048)
+    features_flat = backbone_wrapper(frames_preprocessed)  # (batch*seq, 2048)
 
     # Reshape back to sequence: (batch, seq_len, 2048)
     reshape_layer = ReshapeBackToSequence(
@@ -662,17 +693,21 @@ def create_time_predictor(
     shared = Dense(128, activation='relu', name='shared_dense')(x)
     shared = Dropout(dropout_rate)(shared)
 
-    # Head 1: Remaining time in current phase
+    # Head 1: Remaining time in current phase (raw frame counts)
+    # Using softplus to ensure non-negative outputs while allowing unbounded predictions
+    # Softplus: f(x) = log(1 + exp(x)), always positive, smooth gradients
     remaining_phase = Dense(
         1,
-        activation='softplus',  # Always positive, non-zero gradient (avoids dead neurons)
+        activation='softplus',  # Outputs raw frame counts (non-negative)
         name='remaining_phase'
     )(shared)
 
     # Head 2: Future phase start times (6 values for phases 1-6)
-    # -1 indicates phase already passed
+    # Raw frame counts; -1 in targets indicates phase already passed (masked in loss)
+    # Using softplus for non-negative outputs
     future_phase_starts = Dense(
         NUM_PHASES - 1,  # 6 future phases
+        activation='softplus',  # Outputs raw frame counts (non-negative)
         name='future_phase_starts'
     )(shared)
 
@@ -691,133 +726,6 @@ def create_time_predictor(
     )
 
     return model
-
-
-# ============================================================================
-# SINGLE-FRAME TIME PREDICTOR (For use with current dataloader)
-# ============================================================================
-
-def create_time_predictor_single_frame(
-    hidden_dim=512,
-    phase_embedding_dim=16,
-    dropout_rate=0.3,
-    backbone_trainable_layers=1,
-    input_shape=(480, 854, 3)
-):
-    """
-    Create a simpler single-frame time prediction model.
-
-    This version works with single frames (no sequence dimension) and is
-    compatible with the current dataloader that returns individual frames.
-
-    Architecture:
-        Frame → ResNet-50 → 2048-d
-                    ↓
-        Concat with [elapsed_time, phase_embedding]
-                    ↓
-        Dense layers → Predictions
-
-    Args:
-        hidden_dim: Dimension of hidden layers
-        phase_embedding_dim: Dimension of phase embedding
-        dropout_rate: Dropout rate
-        backbone_trainable_layers: Layers to fine-tune in backbone
-        input_shape: Shape of input images (H, W, C)
-
-    Returns:
-        Keras Model with inputs:
-            - frame: (batch, H, W, C) - single frame
-            - elapsed_phase: (batch,) - elapsed frames in phase
-            - phase: (batch,) - current phase ID
-        And outputs:
-            - remaining_phase: (batch, 1)
-            - future_phase_starts: (batch, 6)
-    """
-    # ========== INPUTS ==========
-    frame_input = Input(shape=input_shape, name='frame', dtype=tf.uint8)
-    elapsed_input = Input(shape=(), name='elapsed_phase')
-    phase_input = Input(shape=(), name='phase', dtype=tf.int32)
-
-    # ========== BACKBONE ==========
-    backbone = create_backbone(
-        trainable_layers=backbone_trainable_layers,
-        input_shape=input_shape
-    )
-
-    # Preprocess frame (Keras 3 compatible)
-    frame_float = ops.cast(frame_input, 'float32')
-    frame_preprocessed = Lambda(
-        lambda x: tf.keras.applications.resnet50.preprocess_input(x)
-    )(frame_float)
-    visual_features = backbone(frame_preprocessed)  # (batch, 2048)
-
-    # ========== TIMING FEATURES ==========
-    # Phase embedding
-    phase_embedding = Embedding(
-        input_dim=NUM_PHASES,
-        output_dim=phase_embedding_dim,
-        name='phase_embedding'
-    )(phase_input)  # (batch, phase_embedding_dim)
-
-    # Normalize elapsed time
-    elapsed_normalized = elapsed_input / 30000.0  # Normalize by typical surgery length
-    elapsed_expanded = ops.expand_dims(elapsed_normalized, axis=-1)  # (batch, 1)
-
-    # ========== COMBINE FEATURES ==========
-    combined = Concatenate(name='feature_concat')([
-        visual_features,
-        phase_embedding,
-        elapsed_expanded
-    ])
-
-    # ========== PREDICTION LAYERS ==========
-    x = Dense(hidden_dim, name='hidden1')(combined)
-    x = BatchNormalization(name='bn1')(x)
-    x = Activation('relu')(x)
-    x = Dropout(dropout_rate)(x)
-
-    x = Dense(hidden_dim // 2, name='hidden2')(x)
-    x = BatchNormalization(name='bn2')(x)
-    x = Activation('relu')(x)
-    x = Dropout(dropout_rate)(x)
-
-    # ========== OUTPUT HEADS ==========
-    # Head 1: Remaining time in current phase
-    remaining_phase = Dense(
-        1,
-        activation='softplus',  # Always positive, non-zero gradient (avoids dead neurons)
-        name='remaining_phase'
-    )(x)
-
-    # Head 2: Future phase start times (6 values for phases 1-6)
-    future_phase_starts = Dense(
-        NUM_PHASES - 1,  # 6 future phases
-        name='future_phase_starts'
-    )(x)
-
-    # ========== BUILD MODEL ==========
-    model = Model(
-        inputs={
-            'frame': frame_input,
-            'elapsed_phase': elapsed_input,
-            'phase': phase_input
-        },
-        outputs={
-            'remaining_phase': remaining_phase,
-            'future_phase_starts': future_phase_starts
-        },
-        name='time_predictor_single_frame'
-    )
-
-    return model
-
-
-# ============================================================================
-# LOSS FUNCTIONS
-# ============================================================================
-# Note: Loss functions (weighted_huber_loss, future_phase_loss, combined_time_loss)
-# are imported from mphy0043_cw.models.losses and re-exported for backward
-# compatibility. See losses.py for implementations.
 
 
 # ============================================================================
@@ -925,26 +833,18 @@ if __name__ == '__main__':
     print(f"   - Parameters: ~{param_memory_mb:.1f} MB")
     print(f"   - For full 480x854 images, use batch_size=4")
 
-    # Test loss functions
-    print("\n5. Testing loss functions...")
-    y_true = tf.constant([[100.0], [50.0], [10.0], [5.0]])
-    y_pred = tf.constant([[95.0], [55.0], [12.0], [3.0]])
-    loss = weighted_huber_loss(y_true, y_pred)
-    print(f"   Weighted Huber loss: {loss.numpy():.4f}")
+    # Test loss functions (with normalized values in [0, 1])
+    print("\n5. Testing loss functions (normalized targets)...")
+    # Normalized targets: values in [0, 1] range
+    y_true = tf.constant([[0.8], [0.5], [0.1], [0.05]])  # Normalized remaining times
+    y_pred = tf.constant([[0.75], [0.55], [0.12], [0.03]])
+    loss = huber_loss(y_true, y_pred, delta=0.1)
+    print(f"   Huber loss (normalized): {loss.numpy():.4f}")
 
-    y_true_future = tf.constant([[100, 200, -1, -1, -1, -1],
-                                  [50, 150, 300, -1, -1, -1]], dtype=tf.float32)
-    y_pred_future = tf.constant([[95, 210, 0, 0, 0, 0],
-                                  [55, 145, 310, 0, 0, 0]], dtype=tf.float32)
-    loss_future = future_phase_loss(y_true_future, y_pred_future)
-    print(f"   Future phase loss: {loss_future.numpy():.4f}")
-
-    # Summary of S4 enhancements
-    print("\n" + "=" * 60)
-    print("S4 Enhancements Summary:")
-    print("=" * 60)
-    print("[OK] HiPPO-LegS initialization for state matrix A")
-    print("[OK] Learnable discretization step Δ per channel")
-    print("[OK] Bilinear (Tustin) discretization method")
-    print("[OK] FFT-based convolution for O(L log L) complexity")
-    print("=" * 60)
+    # Future phase starts (normalized)
+    y_true_future = tf.constant([[0.1, 0.2, -1, -1, -1, -1],
+                                  [0.05, 0.15, 0.3, -1, -1, -1]], dtype=tf.float32)
+    y_pred_future = tf.constant([[0.095, 0.21, 0.5, 0.5, 0.5, 0.5],
+                                  [0.055, 0.145, 0.31, 0.5, 0.5, 0.5]], dtype=tf.float32)
+    loss_future = future_phase_loss(y_true_future, y_pred_future, delta=0.1)
+    print(f"   Future phase loss (normalized): {loss_future.numpy():.4f}")
